@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://ntfy.sh; base-uri 'none'; form-action 'none'">
+<meta name="robots" content="noindex">
+<title>G's Music: sign in to Spotify</title>
+<link rel="stylesheet" href="relay.css">
+</head>
+<body>
+<main>
+  <h1><span class="dot"></span> G's Music</h1>
+
+  <section id="start" hidden>
+    <h2>Sign in to Spotify for your car</h2>
+    <p>Your car showed this code. Sign in with the Spotify account you play on, and the car finishes the
+       sign-in by itself.</p>
+    <div id="cid-ask">
+      <label for="cid">Client ID of your Spotify app</label>
+      <input id="cid" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="latin" placeholder="32 letters and digits">
+      <p class="small">From <b>developer.spotify.com/dashboard</b> → your app → Settings. Asked once; this phone
+         remembers it, and the car keeps it with the sign-in.</p>
+      <label class="check"><input type="checkbox" id="remember" checked> Remember on this phone</label>
+    </div>
+    <div id="cid-known" hidden>
+      <label>Client ID of the Spotify app (sent by the car)</label>
+      <p><code id="cid-full" class="cid"></code></p>
+    </div>
+    <p class="warn">Only continue if you scanned this code from <b>your own car's screen</b> just now, and
+       the Client ID above is your own Spotify app's (developer.spotify.com/dashboard → your app → Settings).
+       Anyone can make a code like this: continuing signs that app in to your Spotify account.</p>
+    <button id="go">Continue to Spotify</button>
+    <p id="start-err" class="err" hidden></p>
+  </section>
+
+  <section id="busy" hidden>
+    <h2 id="busy-title">Sending to the car…</h2>
+    <p id="busy-text">Keep this page open for a moment.</p>
+    <div class="spinner"></div>
+  </section>
+
+  <section id="ok" hidden>
+    <h2>✓ Signed in</h2>
+    <p>The car is signed in to Spotify. You can close this page.</p>
+    <p class="small">The sign-in lasts 6 months (Spotify's limit). Then the car shows a new code: scan it again.</p>
+  </section>
+
+  <section id="fail" hidden>
+    <h2>Sign-in did not finish</h2>
+    <p id="fail-text"></p>
+    <p class="small">In G's Music, tap the <b>G</b> (bottom right) → <b>Sign in with phone (QR)</b> for a new code and scan it again.</p>
+  </section>
+
+  <section id="info" hidden>
+    <h2>Spotify sign-in relay</h2>
+    <p>This page is opened by the QR code of the G's Music app in the car, and by Spotify after you sign in.
+       Opened on its own it does nothing.</p>
+  </section>
+
+  <footer>Static page, no server part: it hands the sign-in, end-to-end encrypted, to the car's mailbox
+    on ntfy.sh, the only server this page talks to besides Spotify. The car alone can use it.</footer>
+</main>
+<script src="relay.js"></script>
+</body>
+</html>
