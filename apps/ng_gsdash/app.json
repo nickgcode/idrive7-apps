@@ -1,0 +1,97 @@
+{
+  "id": "ng_gsdash",
+  "title": "G's Dash",
+  "description": "Driver display and car hub in seven looks (Simple, M Style, GT, Heritage, Flight, Digital '84, Sim Racing). Swipe between Drive (shift lights, gear, rpm, speed, g-meter, drive mode badge, oil / coolant in °F), Showcase (the car, Spotify or a clock), Warm-up (warm-up rev limit), G-force (peak hold) and Tires (TPMS). Optional Spotify panel (art, previous / play-pause / next, seek; own QR sign-in, Spotify Premium and mgu-uplink internet). Optional Cluster map setting: CarPlay's map on the instrument cluster through the separately installed Waze on cluster tool (off unless installed and turned on)",
+  "version": "0.5.1",
+  "vendor": "ng",
+  "loggingId": "OAN1",
+  "iconGlyph": "gauge",
+  "internet": true,
+  "share": ["ng_spotify/spotify.js", "ng_spotify/signin.js", "ng_spotify/signin_config.js", "ng_spotify/qrcodegen.js", "ng_spotify/jpeg_decoder.js"],
+  "signals": {
+    "de.bmw.infotainment.vehicle.CDS": {
+      "statusEngineSpeed2": "rs",
+      "statusEngineTemperature": "rs"
+    },
+    "de.bmw.infotainment.vehicle.CDS2": {
+      "statusLongitudinalAccelerationMassCenter": "rs",
+      "statusLateralAccelerationMassCenter": "rs"
+    },
+    "de.bmw.infotainment.vehicle.Vehicle2": {
+      "statusCarSpeed2": "rs"
+    },
+    "de.bmw.infrastructure.VehicleInformation": {
+      "statusGearboxDrive": "s",
+      "DataPowerTrain2": "s"
+    },
+    "de.bmw.infotainment.drivingexcitement.FES": {
+      "_optional": "the drive mode badge: statusFESVehicleDynamicSwitchHMI.actualValueModeDrivingExperience (enum ActualValueModeDrivingExperience2, by name or number); its pop-up request flags mark a change",
+      "statusFESVehicleDynamicSwitchHMI": "rs"
+    },
+    "de.bmw.infotainment.vehicle.TPMS": {
+      "_optional": "the Tires screen: pressures, temperatures, targets, status (UInt16 raw: pressure x0.1 in the car's unit, temperature raw-40; read every 10 s; raw values logged and on the diagnostics page)",
+      "statusTyrePressure": "rs",
+      "statusTyreTemperature": "rs",
+      "statusTargetTyrePressure": "rs",
+      "statusTyresStatus": "rs"
+    },
+    "de.bmw.infotainment.vehicle.Vehicle": {
+      "_optional": "the car's display units (air pressure, temperature) for the TPMS values",
+      "statusNewCurrentUnitsStatusExt": "rs"
+    }
+  },
+  "screens": [
+    {
+      "name": "MAIN",
+      "kind": "canvas",
+      "title": "G's Dash",
+      "fullscreen": true,
+      "settingsTab": false,
+      "buttons": [
+        ["BTN_RESET", "Reset peaks"],
+        ["BTN_SETTINGS", "Settings"]
+      ]
+    }
+  ],
+  "startWidget": {
+    "comment": "Home-screen widget: just the G logo, large and centred (widget_logo.js from tools/make_g_icon.py: the mark alone, transparent, at 'size' and inside 'safe'). Same layout and cells as upstream's apps/edrive widget (BMW's Drive Recorder widget on this firmware): the picture goes into BackgroundImage1; every text line and the progress bar are written empty here once per placed widget. The small widget shows no pictures on this firmware (upstream's finding), so main.js sets its Title to the app's name; the big one's Title stays empty. 'safe' = share of width / height kept clear on each side (the HMI crops the edges).",
+    "name": "G's Dash",
+    "layout": "LT_Table_OnlineApps_DriveRecorderWidget",
+    "image": "BackgroundImage1",
+    "size": [384, 256],
+    "safe": [0.09, 0.1],
+    "cells": {
+      "ErrorInfo": [false, "Bool"],
+      "background": [true, "Bool"],
+      "Title": ["", "Text"],
+      "ProgressbarVisible": [false, "Bool"],
+      "Progress": [0, "Float"],
+      "TextRecordings": ["", "Text"],
+      "TextCam": ["", "Text"],
+      "TimeElapsed": ["", "Text"],
+      "TimeRemaining": ["", "Text"]
+    }
+  },
+  "settings": [
+    {"key": "look", "label": "Look", "type": "choice", "default": "simple",
+     "options": [["simple", "Simple"], ["m", "M Style"], ["gt", "GT"], ["heritage", "Heritage"], ["flight", "Flight"], ["digital", "Digital '84"], ["simracing", "Sim Racing"]]},
+    {"key": "redline", "label": "Redline", "type": "number", "unit": "rpm", "default": 6500,
+     "steps": [5500, 6000, 6500, 7000, 7500]},
+    {"key": "shiftBefore", "label": "Shift point before redline", "type": "number", "unit": "rpm", "default": 300,
+     "steps": [0, 100, 200, 300, 500, 800]},
+    {"key": "lights", "label": "Shift light style", "type": "choice", "default": "f1",
+     "options": [["m", "M (green-yellow-red)"], ["f1", "Race (green-red-blue)"], ["mono", "Theme colour"]]},
+    {"key": "oilReady", "label": "Oil ready at", "type": "number", "unit": "°F", "default": 194, "markDefault": true,
+     "steps": [160, 165, 170, 175, 180, 185, 190, 194, 200, 205, 210]},
+    {"key": "coolantReady", "label": "Coolant ready at", "type": "number", "unit": "°F", "default": 176, "markDefault": true,
+     "steps": [140, 145, 150, 155, 160, 165, 170, 176, 180, 185, 190, 195]},
+    {"key": "oilFullRevs", "label": "Oil temp for full revs", "type": "number", "unit": "°F", "default": 180, "markDefault": true,
+     "steps": [160, 165, 170, 175, 180, 185, 190, 194, 200]},
+    {"key": "gScale", "label": "G-meter size", "type": "number", "unit": "g", "default": 1.5, "steps": [1.0, 1.5, 2.0]},
+    {"key": "theme", "label": "Simple look colours", "type": "choice", "default": "m_tricolour",
+     "options": [["m_red", "M Red"], ["m_tricolour", "M Tricolour"], ["ice", "Ice White"], ["amber", "Night Amber"]]},
+    {"key": "panel", "label": "Right panel", "type": "choice", "default": "g",
+     "options": [["g", "G-meter and peaks"], ["spotify", "Spotify (touch controls)"]]}
+  ],
+  "retiredSettings": ["demo", "layout", "renderer", "speedUnit", "spotifyPoll", "showBadge"]
+}

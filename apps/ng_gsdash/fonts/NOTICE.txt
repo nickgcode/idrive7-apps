@@ -1,0 +1,15 @@
+G's Dash look fonts
+
+The atlases in this folder (*.json) are glyph images baked from these open fonts by
+tools/bake_gsdash_fonts.py. Each is used under its own licence, included here:
+
+  gs_m_*   Saira (Omnibus-Type)                     SIL Open Font License 1.1   LICENSE-Saira.txt
+  gs_gt_*  Chakra Petch (Cadson Demak)              SIL Open Font License 1.1   LICENSE-ChakraPetch.txt
+  gs_h_*   Jost (Owen Earl / indestructible type*)  SIL Open Font License 1.1   LICENSE-Jost.txt
+  gs_f_*   B612 / B612 Mono (Airbus, Intactile)     SIL Open Font License 1.1   LICENSE-B612.txt
+  gs_s_*   Titillium Web (Accademia di Belle Arti   SIL Open Font License 1.1   LICENSE-TitilliumWeb.txt
+           di Urbino)
+  gs_d_*   DSEG7 / DSEG14 Classic (keshikan)        SIL Open Font License 1.1   LICENSE-DSEG.txt
+
+No font is a car maker's: the looks are original designs in the spirit of their genres, with no
+brand fonts, logos or emblems.

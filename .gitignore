@@ -1,0 +1,16 @@
+# BMW's SDK (the Store puts it in place for a build). NEVER commit it.
+oap-sdk/
+# build output: real builds contain BMW's SDK, so never publish them
+dist/
+*.mgu
+*.tgz
+# keys, car identity, sign-in tokens
+*.pem
+*.key
+id_rsa*
+connect.txt
+spotify-auth.json
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store

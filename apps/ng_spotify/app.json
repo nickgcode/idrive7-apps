@@ -1,0 +1,63 @@
+{
+  "id": "ng_spotify",
+  "title": "G's Music",
+  "description": "Full-screen Spotify player for the touch screen: album art, synced lyrics (LRCLIB) or a visualizer, a progress bar you tap or drag to seek, and big touch controls (previous, play/pause, next, shuffle, repeat, like) over the Spotify Web API; sign in by scanning a QR code with your phone; and a home-screen widget (album art, title and artist of what plays; the track as text on the small size); needs Spotify Premium and mgu-uplink internet",
+  "version": "0.5.1",
+  "vendor": "ng",
+  "loggingId": "OAN2",
+  "internet": true,
+  "startWidget": {
+    "comment": "Home-screen widget, as G's Dash's (same layout: BMW's Drive Recorder widget on this firmware, upstream's apps/edrive). The big size is a picture main.js draws and pushes into BackgroundImage1 while the app runs: the album art with the title, artist and a progress line, or with nothing playing the G's Music logo (widget_logo.js from tools/make_gsmusic_icon.py). Everything sits centred inside 'safe' (share of width / height kept clear on each side: the HMI crops the edges and draws a dark vignette over them). The small size shows no pictures, so main.js writes the track into its text lines (Title, TextRecordings, TextCam, the progress bar, TimeRemaining), or the app's name; the cells below are the values on placement.",
+    "name": "G's Music",
+    "layout": "LT_Table_OnlineApps_DriveRecorderWidget",
+    "image": "BackgroundImage1",
+    "size": [384, 256],
+    "safe": [0.09, 0.1],
+    "cells": {
+      "ErrorInfo": [false, "Bool"],
+      "background": [true, "Bool"],
+      "Title": ["", "Text"],
+      "ProgressbarVisible": [false, "Bool"],
+      "Progress": [0, "Float"],
+      "TextRecordings": ["", "Text"],
+      "TextCam": ["", "Text"],
+      "TimeElapsed": ["", "Text"],
+      "TimeRemaining": ["", "Text"]
+    }
+  },
+  "screens": [
+    {
+      "name": "MAIN",
+      "kind": "canvas",
+      "title": "G's Music",
+      "fullscreen": true,
+      "buttons": [
+        ["BTN_BACKTRACK", "Previous"],
+        ["BTN_PLAY", "Play"],
+        ["BTN_SKIP", "Next"],
+        ["BTN_SHUFFLE", "Shuffle off"],
+        ["BTN_REPEAT", "Repeat off"],
+        ["BTN_LIKE", "Like"],
+        ["BTN_MORE", "More"]
+      ]
+    },
+    {
+      "name": "MORE",
+      "kind": "menu",
+      "title": "G's Music",
+      "settings": true,
+      "items": [
+        ["text", "MORE_INFO", ""],
+        ["button", "BTN_SIGNIN", "Sign in with phone (QR)"]
+      ]
+    }
+  ],
+  "settings": [
+    {"key": "theme", "label": "Colours", "type": "choice", "default": "m_tricolour",
+     "options": [["m_red", "M Red"], ["m_tricolour", "M Tricolour"], ["ice", "Ice White"], ["amber", "Night Amber"]]},
+    {"key": "stage", "label": "Show", "type": "choice", "default": "lyrics",
+     "options": [["lyrics", "Lyrics (else visualizer)"], ["visualizer", "Visualizer"], ["off", "Nothing"]]}
+  ],
+  "_retiredSettings": "settings 0.5.0 had and 0.5.1 dropped: a saved value is deleted on start (kit/runtime/mgu.js). Spotify is polled every 3 s, the renderer is always the GPU one, no demo data.",
+  "retiredSettings": ["poll", "renderer", "demo", "layout"]
+}
