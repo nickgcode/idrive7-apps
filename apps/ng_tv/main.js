@@ -255,18 +255,32 @@ mgu.run({
 
         /* ----- Play in cluster (setting 'cluster', default off) ----- */
         let clusterAsk = 0;                                    // first tap asks, a second within ASK_MS turns it on
+        // The confirm holds for every way in: the dock button, the own settings page, and the kit's generic
+        // settings (the HMI's More menu checkbox, the settings sheet), which set the bool in one tap. A change
+        // to on that did not come through a second tap within ASK_MS counts as the first tap and is undone.
+        let clusterOk = false;
+        const askCluster = () => {
+            clusterAsk = Date.now();
+            say('Tap Cluster again to play in the cluster\'s map area (parked only)', ASK_MS);
+        };
         function toggleCluster() {
             if (settings.get('cluster')) { clusterAsk = 0; settings.set('cluster', false); say('Cluster: off'); return; }
-            if (Date.now() - clusterAsk > ASK_MS) {
-                clusterAsk = Date.now();
-                say('Tap Cluster again to play in the cluster\'s map area (parked only)', ASK_MS);
-                return;
-            }
+            if (Date.now() - clusterAsk > ASK_MS) { askCluster(); return; }
             clusterAsk = 0; toast = null;
-            settings.set('cluster', true);
+            clusterOk = true;
+            try { settings.set('cluster', true); } finally { clusterOk = false; }
         }
         settings.onChange((key, value) => {
             if (key !== 'cluster') return;
+            if (value && !clusterOk) {
+                if (Date.now() - clusterAsk > ASK_MS) {
+                    askCluster();
+                    log.info('cluster: asked to confirm (one tap in the settings)');
+                    settings.set('cluster', false);           // undone: the listeners see off again
+                    return;
+                }
+                clusterAsk = 0; toast = null;                  // the second tap within ASK_MS
+            }
             cluster.enable(!!value);
             log.info('cluster: ' + (value ? 'on' : 'off'));
             labels();

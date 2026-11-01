@@ -25,6 +25,8 @@ const AHEAD_S = 14;                 // keep this much fetched ahead of the decod
 const SLICE_MS = 24;                // decode at most this long in one go
 const LATE_S = 0.25;                // a picture this late is decoded but not shown
 const RESYNC_S = 3;                 // this far behind: the clock jumps (the picture would never catch up)
+const FUTURE_S = 10;                // a picture timed this far ahead of the clock is a broken index entry: skipped
+const FUTURE_RUN = 30;              // ...unless this many in a row are: the programme's time jumped, the clock follows
 const NET_CODES = ['ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNABORTED'];
 
 class Player extends EventEmitter {
@@ -39,6 +41,7 @@ class Player extends EventEmitter {
         this.timer = null; this.gen = 0; this.light = false;
         this.stats = { decMs: 0, decN: 0, shown: 0, shownT: Date.now(), fps: 0, late: 0, bytes0: 0, kbps: 0, decAvg: 0 };
         this.retryAt = 0; this.fails = 0;
+        this.futureRun = 0; this.futureLogged = false;
         this.cache = new Map();        // href -> parsed index (the last few)
     }
 
@@ -201,11 +204,20 @@ class Player extends EventEmitter {
             if (this.pending) {
                 const now = this.now(), pt = this.pending.t;
                 if (pt <= now) {
+                    this.futureRun = 0;
                     if (now - pt < LATE_S) this._show(this.pending);
                     else this.stats.late++;
                     this.pending = null;
                     continue;
                 }
+                if (pt - now > FUTURE_S && ++this.futureRun < FUTURE_RUN) {
+                    // waiting for it would stop the picture for good (one picture, then none)
+                    if (this.futureRun === 1 && !this.futureLogged) { this.futureLogged = true; this.log.warn('player: a picture timed ' + (pt - now).toFixed(0) + ' s ahead - skipped'); }
+                    this.stats.late++; this.pending = null;
+                    continue;
+                }
+                if (pt - now > FUTURE_S) { this.log.warn('player: ' + (pt - now).toFixed(1) + ' s ahead - clock moved'); this.mediaAt = pt; this.wallAt = Date.now(); this.futureRun = 0; continue; }
+                this.futureRun = 0;
                 this._kick(Math.min(40, (pt - now) * 1000));
                 return;
             }

@@ -2,7 +2,7 @@
   "id": "ng_tv",
   "title": "G's TV",
   "description": "EXPERIMENTAL. Watch a TV channel's picture while parked: by default spelunkr.tv's Toonertia channel (Toonami recordings on the Internet Archive, no DRM, no sign-in), decoded in the app (WebAssembly H.264). Video only, no sound yet. Parked only: the picture shows only while the speed is known and at most 3 km/h and the selector is in P, otherwise 'Video available when parked'. Optional, off by default: Play in cluster, the same picture in the instrument cluster's central map area (between the dials) while parked, removed the moment the car leaves P; needs the separate Cluster renderer tool from the Store. Needs mgu-uplink internet",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "vendor": "ng",
   "loggingId": "OAN3",
   "internet": true,

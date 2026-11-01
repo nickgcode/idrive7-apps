@@ -115,11 +115,14 @@ function parseTrak(b, trak) {
     const cts = new Float64Array(n);
     cts.set(dts);
     if (tbl.ctts) {
-        const ver = b[tbl.ctts.body], nc = b.readUInt32BE(tbl.ctts.body + 4);
+        const nc = b.readUInt32BE(tbl.ctts.body + 4);
         s = 0;
         for (let e = 0; e < nc; e++) {
             const cnt = b.readUInt32BE(tbl.ctts.body + 8 + e * 8);
-            const o = ver === 1 ? b.readInt32BE(tbl.ctts.body + 12 + e * 8) : b.readUInt32BE(tbl.ctts.body + 12 + e * 8);
+            // signed in both versions: encoders write negative offsets into version 0 boxes too (FFmpeg does;
+            // e.g. -1000 for every other picture), and read unsigned those put a picture 2^32 ticks ahead,
+            // which the player then waited for forever (one picture, then none)
+            const o = b.readInt32BE(tbl.ctts.body + 12 + e * 8);
             for (let k = 0; k < cnt && s < n; k++) { cts[s] += o; s++; }
         }
     }

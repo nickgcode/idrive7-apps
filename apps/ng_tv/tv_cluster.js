@@ -8,7 +8,8 @@
  *     /var/opt/cluster-render/current/cluster_render_client.js
  *
  * What goes there: one "video" layer on the "map" target only (slot 0x100, 1088x480, the area between the
- * dials), class "content", never "alert", never "exclusive", never the "panel" or "hud" targets. The
+ * dials), class "content" at z 100 (above the CarPlay map of waze-on-cluster, content at z 0, however
+ * old either layer is; dropped, the map shows again), never "alert", never "exclusive", never the "panel" or "hud" targets. The
  * picture is fitted into a 640x480 area centred in the map (x 224). Each frame is the decoder's I420
  * picture scaled to fit 320x240 and repacked into the service's 4:2:0 atlas (Y rows, then U and V side by
  * side in h/2 rows), its levels stretched from limited to full range (the service's shader is full-range
@@ -25,6 +26,12 @@
  * same properties. NG_CR_CLIENT / NG_CR_SOCK point at a test client and socket (the emulator, tests) and
  * skip that check.
  *
+ * Service 0.2.2 adds "rendering" to its target events (verified: the cluster's renderer draws our scene;
+ * checking: not yet, and after 1.5 s shown the service asks for the slot again by itself; unobservable;
+ * none). The tool's client (unchanged) does not pass it on, so it is read from the event before the client
+ * handles it, and shown in the status line. 0.2.1 sends none: the status is as before. Nothing here acts
+ * on it: the service does the asking again, and the layer, its class, z and stall_ms stay as they are.
+ *
  * Never throws into the player, never blocks. Node 8: no ?., ?? or object spread.
  */
 const fs = require('fs');
@@ -39,6 +46,9 @@ const MAP_W = 1088, MAP_H = 480;          // the map target's size
 const AREA = { x: 224, y: 0, w: 640, h: 480 };   // the picture's area, centred in the map
 const MAX_VW = 320, MAX_VH = 240;         // the atlas at most (scaled up on the cluster's GPU)
 const FPS = 15;                           // at most, while the upload cap is at its ceiling
+const Z = 100;                            // above other "content" layers on the map whatever their age (the
+                                          // service orders by class, then z, then newest; the CarPlay map of
+                                          // waze-on-cluster is content at z 0), so no "exclusive" or "alert"
 const STALL_MS = 1000;                    // the service's minimum
 const READY_MS = 5000;                    // no hello within this: "not answering"
 
@@ -152,7 +162,7 @@ class ClusterOut {
         this.atlas = null; this.maps = null; this.id = 0;
         this.fps = FPS; this.lastAt = -1e15; this.sent = 0;
         this.layerState = ''; this.layerReason = '';
-        this.target = { state: '', holder: '', reason: '' };
+        this.target = { state: '', holder: '', reason: '', rendering: '' };
         this.budget = null;
         this.refused = '';
         this.sock = '';
@@ -189,10 +199,20 @@ class ClusterOut {
             if (state !== this.layerState || reason !== this.layerReason) this.log.info('cluster: layer ' + state + (reason ? ' (' + reason + ')' : ''));
             this.layerState = state || ''; this.layerReason = reason || '';
         });
+        // the target event's "rendering" (service 0.2.2), which the client's 'target' event leaves out
+        let rendering = '';
+        const handle = cr._event;
+        if (typeof handle === 'function') {
+            cr._event = function (ev) {
+                try { if (ev && ev.ev === 'target' && ev.target === TARGET) rendering = typeof ev.rendering === 'string' ? ev.rendering : ''; } catch (e) { /* as 0.2.1 */ }
+                return handle.apply(this, arguments);
+            };
+        }
         cr.on('target', (name, state, holder, reason) => {
             if (this.cr !== cr || name !== TARGET) return;
-            this.log.info('cluster: map ' + state + (holder ? ' holder ' + holder : '') + (reason ? ' (' + reason + ')' : ''));
-            this.target = { state: state || '', holder: holder || '', reason: reason || '' };
+            this.log.info('cluster: map ' + state + (holder ? ' holder ' + holder : '') + (reason ? ' (' + reason + ')' : '') + (rendering ? ', rendering ' + rendering : ''));
+            this.target = { state: state || '', holder: holder || '', reason: reason || '', rendering: rendering };
+            rendering = '';
         });
         cr.on('budget', (cap, max, reason) => {
             if (this.cr !== cr) return;
@@ -222,7 +242,7 @@ class ClusterOut {
             if (!this.ref || key !== this.key) {
                 if (this.ref) this._drop();
                 const g = geometry(f.w, f.h);
-                const ref = this.cr.video({ target: TARGET, klass: 'content', z: 10, x: g.x, y: g.y, w: g.w, h: g.h,
+                const ref = this.cr.video({ target: TARGET, klass: 'content', z: Z, x: g.x, y: g.y, w: g.w, h: g.h,
                     vw: g.vw, vh: g.vh, fps: FPS, stall_ms: STALL_MS, contend: true });
                 if (!ref) { this.log.warn('cluster: video layer refused by the client'); return false; }
                 this.ref = ref; this.geo = g; this.key = key;
@@ -258,7 +278,7 @@ class ClusterOut {
         this._drop();
         if (this.cr) { try { this.cr.close(); } catch (e) { /* gone */ } }
         this.cr = null; this.ready = false;
-        this.target = { state: '', holder: '', reason: '' };
+        this.target = { state: '', holder: '', reason: '', rendering: '' };
         this.budget = null; this.refused = ''; this.fps = FPS;
     }
 
@@ -287,7 +307,10 @@ class ClusterOut {
         if (ls === 'shown' || t.state === 'shown') {
             const g = this.geo;
             const low = this.budget && this.budget.cap < this.budget.max;
-            return { level: low ? 'warn' : 'ok', text: 'Playing in the map area' + (g ? ' - ' + g.vw + 'x' + g.vh : '') + ' ' + this.fps + ' fps' + (low ? ' (link busy)' : '') };
+            const text = 'Playing in the map area' + (g ? ' - ' + g.vw + 'x' + g.vh : '') + ' ' + this.fps + ' fps' + (low ? ' (link busy)' : '');
+            // service 0.2.2: whether the cluster's renderer is drawing it; it asks again by itself
+            if (t.rendering === 'checking') return { level: 'warn', text: text + ' - cluster not drawing it yet, asking again' };
+            return { level: low ? 'warn' : 'ok', text: text + (t.rendering === 'verified' ? ' (drawn)' : '') };
         }
         if (t.holder === 'stock') return { level: 'warn', text: 'Taking over the stock map (Central display area: Map view)' };
         if (t.holder === 'foreign') return { level: 'warn', text: 'Map area busy (warning or other content)' };
@@ -298,4 +321,4 @@ class ClusterOut {
     }
 }
 
-module.exports = { ClusterOut, loadClient, toAtlas, geometry, fpsForBudget, trusted, TARGET, AREA, FPS, STALL_MS };
+module.exports = { ClusterOut, loadClient, toAtlas, geometry, fpsForBudget, trusted, TARGET, AREA, FPS, STALL_MS, Z };
