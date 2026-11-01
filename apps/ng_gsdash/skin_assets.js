@@ -27,7 +27,20 @@ function slice(meta, img) {
     });
     return out;
 }
+/** 0.8.4: the field at half resolution (FIELD_K): the Cluster renderer (0.2.2) keeps 16 MiB for every
+ * client's pixels together, an asset counted twice, and the full field (2 x 860x636 rgba) with the look's
+ * art came to about 20 MB: refused ("the service's pixel memory is full"). Each 2x2 block keeps its top-left
+ * pixel, so the Pixel look's every-4th-pixel samples are unchanged. */
+function half(t, k) {
+    const w = Math.ceil(t.w / k), h = Math.ceil(t.h / k), out = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const s = ((y * k) * t.w + x * k) * 4, d = (y * w + x) * 4;
+        out[d] = t.data[s]; out[d + 1] = t.data[s + 1]; out[d + 2] = t.data[s + 2]; out[d + 3] = t.data[s + 3];
+    }
+    return { w, h, data: out };
+}
 function sliceField(img) {
-    return { L: crop(img, 0, 0, SK.REGION_W, SK.REGION_H), R: crop(img, SK.REGION_W, 0, SK.REGION_W, SK.REGION_H) };
+    const k = SK.FIELD_K;
+    return { L: half(crop(img, 0, 0, SK.REGION_W, SK.REGION_H), k), R: half(crop(img, SK.REGION_W, 0, SK.REGION_W, SK.REGION_H), k) };
 }
 module.exports = { crop, slice, sliceField };

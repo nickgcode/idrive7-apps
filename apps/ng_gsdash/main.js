@@ -40,7 +40,7 @@
  *     tool's patch service: off unless the tool is installed and the user turns it on (with a
  *     confirmation); G's Dash stores nothing for it.
  *   - cluster skins (0.8.0, cluster_skin.js, setting "clusterSkin", on by default): with the cluster in
- *     its Sport layout, the cluster's own dials redrawn in the G's Dash look (the look switches the skin;
+ *     its M / Sport layout (any drive mode), the cluster's own dials redrawn in the G's Dash look (the look switches the skin;
  *     Stock, the stock dials redrawn, from diagnostics), the telltales on top. 0.8.1: driving too - the
  *     speedometer, tachometer, digital speed and gear live from every car sample (car.onSample, 30 Hz at
  *     most); fuel, oil and the ACC / speed-limit / assist area left the car's own; back to stock when a
@@ -197,7 +197,7 @@ mgu.run({
             pixel: (o) => CL.pixelImage(P, o),
         } });
         const logoOn = () => settings.get('clusterLogo') !== 'off';
-        // the cluster skins (cluster_skin.js, setting "clusterSkin"): Sport layout, parked and driving, the look's;
+        // the cluster skins (cluster_skin.js, setting "clusterSkin"): any drive mode, parked and driving, the look's;
         // skinMode from the diagnostics page: 'skin', 'align' (the alignment card), 'stock' (the Stock redraw)
         const cskin = new CS.ClusterSkin({ log, app: 'ng_gsdash', load: (f) => PNG.decode(fs.readFileSync(path.join(__dirname, f))) });
         const skinOn = () => settings.get('clusterSkin') !== 'off';
@@ -626,7 +626,7 @@ mgu.run({
             lbl('cluster', fb.x + fb.w / 2, fb.y + Math.round(RH3 * 0.81), Math.round(u.size * 0.72), t.dim, { align: 'center' });
             cv.target(fb.x, fb.y, fb.w, fb.h, () => { gDown = Date.now(); downKey = 'opt:refresh'; refreshCluster(); }, 'opt:refresh', u.radius);
             // the cluster skins and the HUD shift lights (0.8.2): one on turns the other off
-            toggleRow(cv, S, lk, x2, s3(4), cw, RH3, 'Cluster skins (Sport)', 'cs', skinOn(), cskin.view(), (v) => settings.set('clusterSkin', v));
+            toggleRow(cv, S, lk, x2, s3(4), cw, RH3, 'Cluster skins', 'cs', skinOn(), cskin.view(), (v) => settings.set('clusterSkin', v));
             toggleRow(cv, S, lk, x2, s3(5), cw, RH3, 'HUD shift lights + gear', 'hs', hudOn(), hud.view(), (v) => settings.set('hudShift', v));
         }
         const REFRESHED_MS = 2600;
@@ -809,6 +809,17 @@ mgu.run({
             put(x + 14, y, w - 28, 'shown: ' + (dg.mode || '(none: no single mode read)'), t.text, 19); y += LH + 2;
             put(x + 14, y, w - 28, 'FES: ' + sub, t.dim); y += LH + 2;
             put(x + 14, y, w - 28, 'Car data only. No demo, no estimates.', t.dim); y += LH + 12;
+            // 0.8.4: the Cluster renderer's whole refusal for the cluster skins and the HUD lights (Options shows it short)
+            [['Skins', cskin.refusal()], ['HUD lights', hud.refusal()]].forEach((r) => {
+                if (!r[1]) return;
+                let rest = r[0] + ' refused: ' + r[1], n = 0;
+                while (rest && n < 3) {
+                    let cut = rest.length;
+                    while (cut > 1 && cv.textWidth(rest.slice(0, cut), 15, { literal: true }) > w - 28) cut--;
+                    put(x + 14, y, w - 28, rest.slice(0, cut), t.warn || t.crit, 15); y += 20; rest = rest.slice(cut); n++;
+                }
+                y += 4;
+            });
             cv.text('Catalog', x + 14, y, 19, t.accent2 || t.accent, { font: 'bold', literal: true }); y += 24;
             put(x + 14, y, w - 28, DIAG.CATALOG, t.dim, 15); y += LH;
             if (cat.status === 'reading') put(x + 14, y, w - 28, 'reading...', t.dim);

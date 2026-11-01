@@ -3,8 +3,8 @@
  * cluster_skin.js - G's Dash 0.8.1's cluster skins: the instrument cluster's own dials redrawn in the
  * G's Dash look (all ten: Stock, Simple, M Style, GT, Heritage, Flight, Digital '84, Sim Racing, Lumen,
  * Pixel), through the separately installed Cluster renderer tool (the client as cluster_logo.js loads
- * it). While G's Dash is open, the setting "clusterSkin" is on and the cluster shows its Sport layout
- * (the only one measured: driveMode SPORT), parked and (0.8.1) driving: the needles, fills, digital
+ * it). While G's Dash is open, the setting "clusterSkin" is on and the cluster shows its M / Sport layout
+ * (the one measured; 0.8.4: any drive mode, the car coded to that layout in all), parked and (0.8.1) driving: the needles, fills, digital
  * speed and gear follow the live values. Anything else (another layout, no speed signal, values older
  * than LIVE_MS while moving, an error, another app drawing on the panel or the HUD) and the stock dials
  * are back within a second; stale values within LIVE_MS + one pump.
@@ -44,9 +44,9 @@ const CL = require('./cluster_logo');
 
 const TARGET = 'panel', KLASS = 'content', SKIN_Z = 90;
 const SPEED_IFACE = 'de.bmw.infotainment.vehicle.Vehicle2';
-const LAYOUT = 'SPORT';                                  // the cluster layout the geometry was measured on
-// 0.8.4: the drive modes that show the cluster's Sport layout (Sport and Sport+ share it)
-const LAYOUT_MODES = ['SPORT', 'SPORT+'];
+// the cluster layout the geometry was measured on (the M / Sport layout); 0.8.4: in every drive mode,
+// as the car is coded to show that layout in all of them - the drive mode no longer gates the skins
+const LAYOUT = 'SPORT';
 const PARKED_KMH = 1;
 const POLL_MS = 1000, PUMP_MS = 33, PUSH_MS = 33, REARM_MS = 60, FRESH_HOLD = 200, FRESH_FADE = 40, STALE_MS = 600;
 const LIVE_MS = 300, RESHOW_MS = 500;
@@ -81,8 +81,6 @@ function blocker(s) {
         if (d.speed >= PARKED_KMH) return 'moving';
         if (d.stage === 'D' || d.stage === 'R' || (SK.isNum(d.gear) && (d.gear > 0 || d.gear === -1) && !d.gearGuessed)) return 'in gear';
     }
-    if (!d.driveMode) return 'no drive mode';
-    if (LAYOUT_MODES.indexOf(d.driveMode) < 0) return 'not Sport';
     return '';
 }
 /** moving, the values' age: '' or 'stale values' (now: ms, the clock s.at is on) */
@@ -131,7 +129,7 @@ class ClusterSkin {
         this.field = null;                        // { L, R } asset refs, once a connection
         this.cur = null;                          // { id, assets: [...], L: { ref, anim, sent }, R }
         this.visible = false; this.lastRearm = -1e15; this.lastPump = -1e15;
-        this.others = []; this.busyAt = -1e15; this.layerErr = ''; this.errCount = 0; this.refused = ''; this.noEffect = false;
+        this.others = []; this.busyAt = -1e15; this.layerErr = ''; this.lastErr = ''; this.errCount = 0; this.refused = ''; this.noEffect = false;
         this.poll = null; this.pump = null; this.downAt = this.now();
     }
 
@@ -198,7 +196,7 @@ class ClusterSkin {
         cr.on('layer', (ref, state, reason) => {
             if (this.cr !== cr || !this.cur) return;
             if ((this.cur.L && ref === this.cur.L.ref) || (this.cur.R && ref === this.cur.R.ref)) {
-                if (state === 'error') { this.layerErr = reason || 'error'; this.log.warn('cluster skin: layer error' + (reason ? ' (' + reason + ')' : '')); this._hide('layer error'); }
+                if (state === 'error') { this.layerErr = reason || 'error'; this.lastErr = 'layer: ' + (reason || 'error'); this.log.warn('cluster skin: layer error' + (reason ? ' (' + reason + ')' : '')); this._hide('layer error'); }
             }
         });
         cr.on('refused', (op, ref, reason) => {
@@ -206,7 +204,7 @@ class ClusterSkin {
             this.refused = (op || '?') + ': ' + (reason || '?');
             this.log.warn('cluster skin: refused ' + this.refused);
             // one of ours refused (a shader that did not compile, an asset over a limit): stock, retried
-            if (this.cur && (ref === (this.cur.L && this.cur.L.ref) || ref === (this.cur.R && this.cur.R.ref) || this.cur.assets.indexOf(ref) >= 0)) { this.layerErr = this.refused; this._hide('refused'); }
+            if (this.cur && (ref === (this.cur.L && this.cur.L.ref) || ref === (this.cur.R && this.cur.R.ref) || this.cur.assets.indexOf(ref) >= 0)) { this.layerErr = this.refused; this.lastErr = this.refused; this._hide('refused'); }
         });
         cr.on('status', (text) => {
             if (this.cr !== cr) return;
@@ -335,7 +333,10 @@ class ClusterSkin {
                 this.field = refs;
             }
         } catch (e) { this.log.warn('cluster skin: ' + id + ' assets: ' + e.message); return false; }
-        const old = this.cur, cur = { id, meta, assets: [] };
+        // 0.8.4: the old look's assets go first - both looks at once do not fit the renderer's pixel memory
+        const old = this.cur;
+        if (old) { this._dropAll(old); this.cur = null; this.visible = false; }
+        const cur = { id, meta, assets: [] };
         for (let i = 0; i < 2; i++) {
             const s = i ? 'R' : 'L', S = SK.SIDES[s];
             const art = this._asset(tex.art[s]), band = this._asset(tex.band[s]), glyph = this._asset(tex.glyph[s]);
@@ -350,7 +351,6 @@ class ClusterSkin {
             this.stats.layers++;
         }
         this.cur = cur; this.visible = false;
-        if (old) this._dropAll(old);
         this.log.info('cluster skin: ' + id + ' made (' + Math.round(this.stats.bytes / 1024) + ' KB sent this run)');
         return true;
     }
@@ -404,7 +404,7 @@ class ClusterSkin {
         const s = this.st || {};
         if (s.enabled === false) return { kind: 'off', text: 'Off' };
         if (this.err) return { kind: 'none', text: SHORT_ERR[this.err.error] || this.err.text };
-        if (!this.want) return { kind: 'off', text: 'On - Sport layout' };
+        if (!this.want) return { kind: 'off', text: 'On - with G\'s Dash open' };
         if (!this.cr || !this.ready || !this.polled) return { kind: 'wait', text: 'Connecting to renderer' };
         if (this.noEffect) return { kind: 'none', text: 'Update Cluster renderer' };
         const why = this.why || this._why();
@@ -412,13 +412,19 @@ class ClusterSkin {
             const n = this.cur ? META.looks[this.cur.id].name : '';
             return { kind: 'on', text: 'Shown - ' + n };
         }
-        const TXT = { moving: 'Stock while driving', 'stale values': 'Stock - signal delayed', 'in gear': 'Stock while in gear', 'not Sport': 'Stock - switch to Sport mode', 'no drive mode': 'Stock - drive mode unknown',
+        const TXT = { moving: 'Stock while driving', 'stale values': 'Stock - signal delayed', 'in gear': 'Stock while in gear',
             'no speed signal': 'Stock - no speed signal', 'demo data': 'Stock - demo data', 'panel in use': 'Waiting - panel in use',
             'renderer error': 'Renderer refused the skin', assets: 'Skin failed to load', 'no update': 'Stock' };
+        if (why === 'renderer error' && !this.noEffect && this.lastErr) return { kind: 'error', text: 'Refused: ' + shortReason(this.lastErr) };
         return { kind: why === 'renderer error' || why === 'assets' ? 'error' : 'wait', text: TXT[why] || 'Stock' };
     }
+    /** the whole refusal (the diagnostics page): '' when none */
+    refusal() { return this.lastErr || ''; 
+    }
 }
+/** a refusal for the Options line: the service's reason without the op ("asset: ", "layer: ") */
+function shortReason(r) { return String(r || '').replace(/^[a-z?]+: /, ''); }
 const SHORT_ERR = { missing: 'Needs Cluster renderer', noclient: 'Update Cluster renderer', untrusted: 'Renderer not trusted', load: 'Renderer failed to load' };
 
-module.exports = { ClusterSkin, blocker, staleness, values, shownSpeed, panelLayers, LOOK_SKIN, TARGET, KLASS, SKIN_Z, LAYOUT, LAYOUT_MODES, PARKED_KMH,
+module.exports = { shortReason, ClusterSkin, blocker, staleness, values, shownSpeed, panelLayers, LOOK_SKIN, TARGET, KLASS, SKIN_Z, LAYOUT, PARKED_KMH,
     POLL_MS, PUMP_MS, PUSH_MS, REARM_MS, FRESH_HOLD, FRESH_FADE, STALE_MS, LIVE_MS, RESHOW_MS, HOLD_MS, SPEED_PCT, SPEED_ADD };

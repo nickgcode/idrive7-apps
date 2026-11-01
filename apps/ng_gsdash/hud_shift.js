@@ -84,7 +84,7 @@ class HudShift {
         this.cr = null; this.ready = false; this.polled = false;
         this.cur = null;                                    // { id, style, labels, assets, ref, anim, sent }
         this.visible = false; this.lastRearm = -1e15;
-        this.others = []; this.busyAt = -1e15; this.layerErr = ''; this.errCount = 0; this.refused = ''; this.noEffect = false;
+        this.others = []; this.busyAt = -1e15; this.layerErr = ''; this.lastErr = ''; this.errCount = 0; this.refused = ''; this.noEffect = false;
         this.hudState = ''; this.hudHolder = ''; this.hudReason = ''; this.layerState = ''; this.poll = null; this.pump = null; this.downAt = this.now();
     }
 
@@ -134,13 +134,13 @@ class HudShift {
         cr.on('layer', (ref, state, reason) => {
             if (this.cr !== cr || !this.cur || ref !== this.cur.ref) return;
             this.layerState = state || '';
-            if (state === 'error') { this.layerErr = reason || 'error'; this.log.warn('hud shift: layer error' + (reason ? ' (' + reason + ')' : '')); this._hide('layer error'); }
+            if (state === 'error') { this.layerErr = reason || 'error'; this.lastErr = 'layer: ' + (reason || 'error'); this.log.warn('hud shift: layer error' + (reason ? ' (' + reason + ')' : '')); this._hide('layer error'); }
         });
         cr.on('refused', (op, ref, reason) => {
             if (this.cr !== cr) return;
             this.refused = (op || '?') + ': ' + (reason || '?');
             this.log.warn('hud shift: refused ' + this.refused);
-            if (this.cur && (ref === this.cur.ref || this.cur.assets.indexOf(ref) >= 0)) { this.layerErr = this.refused; this._hide('refused'); }
+            if (this.cur && (ref === this.cur.ref || this.cur.assets.indexOf(ref) >= 0)) { this.layerErr = this.refused; this.lastErr = this.refused; this._hide('refused'); }
         });
         cr.on('target', (name, state, holder, reason) => {
             if (this.cr !== cr || name !== TARGET) return;
@@ -343,8 +343,11 @@ class HudShift {
         const TXT = { 'stale values': 'Hidden - signal delayed', 'no rpm signal': 'Hidden - no rpm signal', 'demo data': 'Hidden - demo data',
             'hud in use': 'Waiting - HUD in use', 'renderer error': 'Renderer refused the lights', assets: 'Lights failed to load',
             'no shift point': 'Hidden - set the redline', 'no update': 'Hidden' };
+        if (why === 'renderer error' && !this.noEffect && this.lastErr) return { kind: 'error', text: 'Refused: ' + String(this.lastErr).replace(/^[a-z?]+: /, '') };
         return { kind: why === 'renderer error' || why === 'assets' ? 'error' : 'wait', text: TXT[why] || 'Hidden' };
     }
+    /** the whole refusal (the diagnostics page): '' when none */
+    refusal() { return this.lastErr || ''; }
 }
 const SHORT_ERR = { missing: 'Needs Cluster renderer', noclient: 'Update Cluster renderer', untrusted: 'Renderer not trusted', load: 'Renderer failed to load' };
 

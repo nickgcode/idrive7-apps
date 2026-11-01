@@ -217,6 +217,7 @@ function fragment(meta, side) {
         'uniform vec4 u_gl;',
         'uniform vec4 u_cut;',
         'const vec2 SZ = vec2(' + f1(S.w) + ', ' + f1(S.h) + ');',
+        'const vec2 FSZ = vec2(' + f1(Math.ceil(S.w / FIELD_K)) + ', ' + f1(Math.ceil(S.h / FIELD_K)) + ');',
         'const vec2 BSZ = vec2(' + f1(BAND_W) + ', ' + f1(BAND_ROWS) + ');',
         'const vec2 GSZ = vec2(' + f1(cells.atlas[0]) + ', ' + f1(cells.atlas[1]) + ');',
         'vec4 texel(sampler2D t, vec2 p, vec2 sz) { return texture2D(t, (floor(p) + 0.5) / sz); }',
@@ -285,7 +286,7 @@ function fillCall(U, rows, f, q, tr, hd, g) {
     const b0 = g === 1 ? 0 : SMALL_CODE;
     return [
         '        {',
-        '            vec4 fd = texel(u_field, ' + p + ', SZ);',
+        '            vec4 fd = texel(u_field, floor((' + p + ') / ' + f1(FIELD_K) + '), FSZ);',
         '            float b = floor(fd.b * 255.0 + 0.5) - ' + f1(b0) + ';',
         '            if (b >= 0.0 && b < ' + f1(rows * 2) + ') {',
         '                float s = (floor(fd.r * 255.0 + 0.5) + floor(fd.g * 255.0 + 0.5) * 256.0) / ' + f1(S_SCALE) + ';',
@@ -295,5 +296,6 @@ function fillCall(U, rows, f, q, tr, hd, g) {
     ].join('\n');
 }
 
-module.exports = { GEOM, PANEL_W, PANEL_H, REGION_W, REGION_H, SIDES, BAND_W, BAND_ROWS, MAIN_ROWS, SMALL_ROW, SMALL_ROWS, ALT_ROW,
+const FIELD_K = 2;                                        // 0.8.4: the field's texels are 2x2 pixels (skin_assets.js)
+module.exports = { FIELD_K, GEOM, PANEL_W, PANEL_H, REGION_W, REGION_H, SIDES, BAND_W, BAND_ROWS, MAIN_ROWS, SMALL_ROW, SMALL_ROWS, ALT_ROW,
     SMALL_CODE, S_SCALE, CUTS, CUT_PAD, RANGE, ACC_AREA, CENTRE, SMALL_BOX, MAIN_ZONE, SPEED_COVER, GEAR_COVER, SPEED_MAX, LEN, MAJ, at, sOf, dirAt, local, cutsOf, uniforms, fragment, clamp, isNum };
