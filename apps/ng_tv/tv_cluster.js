@@ -9,7 +9,7 @@
  *
  * What goes there: one "video" layer on the "map" target only (slot 0x100, 1088x480, the area between the
  * dials), class "content" at z 100 (above the CarPlay map of waze-on-cluster, content at z 0, however
- * old either layer is), never "alert" (0.4.2: or video on the "panel" target, see below). It covers the whole map area
+ * old either layer is), never "alert". It covers the whole map area
  * and is "exclusive": while it is drawn the service suspends (does not remove) the layers below it on the
  * map, so the picture replaces the CarPlay map instead of sitting on it; the suspended layers write
  * nothing to the display and come back in the flush ours goes. A drawn layer is one with a frame within
@@ -50,19 +50,8 @@
  * it cannot cover the HUD's own content (that is a different mapping in the slot, the KOMBI's queue
  * decides), and our layer is opaque over the whole target anyway. Never "alert".
  *
- * 0.4.2, the cluster screens ("Cluster screen" in main.js; the panel tests of 0.4.1 proved on the car that
- * the "panel" target covers the whole 1920x720 cluster and that what a layer leaves out stays see-through,
- * so the test cards are gone): target "panel" (slot 0x203, over the gauges; it shares the HUD's scene id, so
- * the two exclude each other) with video, as places of the same connection:
- *   full:  the whole panel, a 640x240 frame tripled to 1920x720, the picture fitted at its aspect, black
- *          around (opaque over the gauges): 4:3 320x240 shown 960x720 at x 480; 16:9 426x240 shown 1278x720
- *   left:  the left third (x 0-640), a frame of the picture's own size within 320x360, doubled: 4:3 320x240
- *          shown 640x480 at 0,120; 16:9 320x180 shown 640x360 at 0,180. The layer is only the picture, so the
- *          letterbox bars and the rest of the cluster stay see-through (the stock gauges show)
- *   right: the same in the right third (x 1280-1920)
- * Class "content", z 100, NOT exclusive, contend, stall 1000, at most 15 a second: about 1.7 MB/s (4:3) to
- * 2.3 MB/s (16:9 full) worst case, inside the service's shared 6000 KB/s with Waze's map; fewer a second
- * when the service reports a lower upload cap. Never "alert", never another slot.
+ * 0.4.3: the cluster screens of 0.4.2 (Full / Left / Right on the "panel" target) are gone: the cluster
+ * picture is the map area only, as proven on the car, and the HUD. Never "alert", never the panel.
  *
  * Never throws into the player, never blocks. Node 8: no ?., ?? or object spread.
  */
@@ -76,18 +65,13 @@ const TESTING = !!(process.env.NG_CR_CLIENT || process.env.NG_CR_SOCK);
 const TARGET = 'map';                     // the cluster's map area (the default target)
 const MAP_W = 1088, MAP_H = 480;          // the map target's size
 /*
- * The places G's TV may use (see above): name: the service's target (its size W x H), the area x, y, w, h on
- * it, k: the cluster's GPU scales the frame k times (the frame at most w/k x h/k), fit: the layer is the
- * picture only (the rest see-through) instead of the whole area with black around, exclusive.
+ * The places G's TV uses (see above): name: the service's target (its size W x H), the area x, y, w, h on
+ * it, k: the cluster's GPU scales the frame k times (the frame at most w/k x h/k), exclusive.
  */
 const TARGETS = {
     map: { key: 'map', name: 'map', W: MAP_W, H: MAP_H, x: 0, y: 0, w: MAP_W, h: MAP_H, k: 2, exclusive: true, tag: 'cluster', area: 'the map area' },
     hud: { key: 'hud', name: 'hud', W: 800, H: 480, x: 0, y: 0, w: 800, h: 480, k: 2, exclusive: false, tag: 'hud', area: 'the HUD' },
-    full: { key: 'full', name: 'panel', W: 1920, H: 720, x: 0, y: 0, w: 1920, h: 720, k: 3, exclusive: false, tag: 'panel', area: 'the whole cluster' },
-    left: { key: 'left', name: 'panel', W: 1920, H: 720, x: 0, y: 0, w: 640, h: 720, k: 2, fit: true, exclusive: false, tag: 'panel', area: 'the left of the cluster' },
-    right: { key: 'right', name: 'panel', W: 1920, H: 720, x: 1280, y: 0, w: 640, h: 720, k: 2, fit: true, exclusive: false, tag: 'panel', area: 'the right of the cluster' },
 };
-TARGETS.panel = TARGETS.full;             // target 'panel': the whole panel
 const AREA = { x: 0, y: 0, w: MAP_W, h: MAP_H };  // the layer: the whole map area
 const FRAME_W = MAP_W / 2, FRAME_H = MAP_H / 2;   // 544x240, doubled on the cluster's GPU
 const FPS = 15;                           // at most, while the upload cap is at its ceiling
@@ -111,7 +95,7 @@ for (let i = 0; i < 256; i++) {
  * For a w x h picture at a place (TARGETS' key): the layer (x, y, w, h on the target), its frame (vw x vh),
  * the picture in the frame (pw x ph at px, py: the largest that fits the area at the picture's aspect, even
  * sizes and places for the 4:2:0 chroma, centred: letterboxed) and where that shows (sx, sy, sw, sh). The
- * layer is the whole area (black around the picture), or with fit the picture alone (nothing around it).
+ * layer is the whole area (black around the picture).
  */
 function geometry(w, h, target) {
     const T = TARGETS[target] || TARGETS.map, k = T.k;
@@ -121,8 +105,6 @@ function geometry(w, h, target) {
     if (pw > FRAME_W) { pw = FRAME_W; ph = Math.round(FRAME_W / asp); }
     pw = Math.max(2, pw & ~1); ph = Math.max(2, ph & ~1);
     const px = ((FRAME_W - pw) >> 1) & ~1, py = ((FRAME_H - ph) >> 1) & ~1;
-    const sx = T.x + Math.round((T.w - pw * k) / 2), sy = T.y + Math.round((T.h - ph * k) / 2);
-    if (T.fit) return { vw: pw, vh: ph, x: sx, y: sy, w: pw * k, h: ph * k, pw, ph, px: 0, py: 0, sx, sy, sw: pw * k, sh: ph * k };
     return { vw: FRAME_W, vh: FRAME_H, x: T.x, y: T.y, w: T.w, h: T.h, pw, ph, px, py,
         sx: T.x + px * k, sy: T.y + py * k, sw: pw * k, sh: ph * k };
 }
@@ -170,17 +152,6 @@ function mapsFor(sw, sh, vw, vh) {
 }
 
 /** The frame rate for an upload cap (KB/s) against its ceiling: 15 at the ceiling, then 10, then 5. */
-/**
- * The panel's places (Full / Left / Right) keep the picture's own bytes to about 2.3 MB/s, so with Waze's map
- * on the same link (the service's 6000 KB/s) there is room: a wide film (2.4:1 on Full, 576x240) at 11 a
- * second rather than 15. The map and the HUD as before.
- */
-const PANEL_BPS = 2.32e6;                 // 16:9 on Full: 426x240 x 1.5 x 15 = 2.30 MB/s
-function picFps(g, T) {
-    if (!g || !T || T.name !== 'panel') return FPS;
-    return Math.max(5, Math.min(FPS, Math.floor(PANEL_BPS / (g.pw * g.ph * 1.5))));
-}
-
 function fpsForBudget(cap, max) {
     if (!(cap > 0) || !(max > 0) || cap >= max) return FPS;
     return cap >= 4000 ? 10 : 5;
@@ -280,7 +251,7 @@ class ClusterOut {
         });
         // the target event's "rendering" (service 0.2.2), which the client's 'target' event leaves out
         let rendering = '';
-        const TN = this.T.name;                       // place() keeps the target: the same connection
+        const TN = this.T.name;
         const handle = cr._event;
         if (typeof handle === 'function') {
             cr._event = function (ev) {
@@ -316,10 +287,9 @@ class ClusterOut {
     write(f) {
         if (!this.on || !this.cr || !this.ready || !f || !f.yuv || f.w < 16 || f.h < 16 || (f.w & 1) || (f.h & 1)) return false;
         const now = this.now();
-        if (now - this.lastAt < 1000 / Math.min(this.fps, picFps(this.geo, this.T)) - 4) return false;
+        if (now - this.lastAt < 1000 / this.fps - 4) return false;
         try {
             const key = f.w + 'x' + f.h, T = this.T;
-            if (this.ref && key !== this.key && T.fit) this._drop();  // fit: the layer is the picture, made again
             if (this.ref && key !== this.key) {
                 // a new picture size: the same layer and frame (always the whole map area), the picture
                 // placed again on black, so the map below is not let through for a moment
@@ -346,20 +316,6 @@ class ClusterOut {
             this.log.warn(this.tag + ': frame ' + e.message);
             return false;
         }
-    }
-
-    /**
-     * The place on the same target (0.4.2: the panel's full / left / right): a layer up goes (the next
-     * picture makes it again at the new place). False for an unknown place or another target.
-     */
-    place(key) {
-        const T = TARGETS[key];
-        if (!T || T.name !== this.T.name) return false;
-        if (T === this.T) return true;
-        this._drop();
-        this.T = T;
-        this.log.info(this.tag + ': place ' + T.key + ' (' + T.area + ')');
-        return true;
     }
 
     _drop() {
@@ -392,7 +348,7 @@ class ClusterOut {
      * playing: the player has pictures to send.
      */
     status(parked, playing) {
-        if (this.T.name === 'hud' || this.T.name === 'panel') return this._hudStatus(parked, playing);
+        if (this.T.name === 'hud') return this._hudStatus(parked, playing);
         if (!this.on) return { level: 'off', text: 'Off' };
         if (this.err) return { level: 'bad', text: this.err.text };
         if (!this.cr) return { level: 'bad', text: 'Cluster renderer unavailable' };
@@ -440,26 +396,25 @@ class ClusterOut {
             return this.now() - this.connectAt > READY_MS ? { level: 'bad', text: 'Cluster renderer not answering' }
                 : { level: 'info', text: 'Connecting to the cluster renderer...' };
         }
-        const P = this.T.name === 'panel', NM = P ? 'Panel' : 'HUD';
-        const svc = ' [' + (P ? 'PANEL' : 'HUD') + ': ' + this.service() + ']';
+        const svc = ' [HUD: ' + this.service() + ']';
         if (!parked) return { level: 'info', text: 'Ready - only when parked' + svc };
         if (!this.ref) return { level: 'info', text: (playing ? 'Starting...' : 'Ready - press Play') + svc };
         const t = this.target, ls = this.layerState;
         if (this.refused && ls !== 'shown') return { level: 'bad', text: 'Refused (' + this.refused + ')' + svc };
         if (ls === 'error') return { level: 'bad', text: 'Refused by the renderer' + (this.layerReason ? ' (' + this.layerReason + ')' : '') + svc };
-        if (t.state === 'unavailable') return { level: 'bad', text: NM + ' unavailable' + svc };
+        if (t.state === 'unavailable') return { level: 'bad', text: 'HUD unavailable' + svc };
         if (ls === 'shown' || t.state === 'shown') {
             const g = this.geo;
-            const detail = ' on ' + this.T.area + (g ? ' - ' + g.sw + 'x' + g.sh : '') + ' ' + Math.min(this.fps, picFps(g, this.T)) + ' fps';
+            const detail = ' on ' + this.T.area + (g ? ' - ' + g.sw + 'x' + g.sh : '') + ' ' + this.fps + ' fps';
             const level = t.rendering === 'checking' ? 'warn' : 'ok';
             return { level, text: 'Playing' + detail + svc };
         }
-        if (/scene id/.test(t.reason)) return { level: 'warn', text: P ? 'Panel busy - another app uses the HUD (it shares the panel\'s scene)' + svc : 'HUD busy - another app uses the cluster panel (it shares the HUD\'s scene)' + svc };
-        if (t.state === 'parked' || t.state === 'waiting') return { level: 'warn', text: (P ? 'Panel busy - the car\'s own cluster content is in front' : 'HUD busy - the car\'s own HUD content is in front') + svc };
-        if (ls === 'suspended') return { level: 'warn', text: 'Hidden by other ' + NM + ' content' + svc };
+        if (/scene id/.test(t.reason)) return { level: 'warn', text: 'HUD busy - another app uses the cluster panel (it shares the HUD\'s scene)' + svc };
+        if (t.state === 'parked' || t.state === 'waiting') return { level: 'warn', text: 'HUD busy - the car\'s own HUD content is in front' + svc };
+        if (ls === 'suspended') return { level: 'warn', text: 'Hidden by other HUD content' + svc };
         if (ls === 'stalled') return { level: 'info', text: 'Waiting for pictures...' + svc };
-        return { level: 'info', text: 'Asking for the ' + (P ? 'panel' : 'HUD') + '...' + svc };
+        return { level: 'info', text: 'Asking for the HUD...' + svc };
     }
 }
 
-module.exports = { ClusterOut, loadClient, toAtlas, blackAtlas, geometry, fpsForBudget, picFps, PANEL_BPS, trusted, TARGET, TARGETS, AREA, FPS, STALL_MS, Z, EXCLUSIVE };
+module.exports = { ClusterOut, loadClient, toAtlas, blackAtlas, geometry, fpsForBudget, trusted, TARGET, TARGETS, AREA, FPS, STALL_MS, Z, EXCLUSIVE };

@@ -9,7 +9,7 @@ Apps for BMW iDrive 7 head units, installed through robertn_store.
   widget. Needs Spotify Premium and internet through the Store's uplink. Setup: [docs/spotify.md](docs/spotify.md).
 - **G's TV** (`ng_tv`): experimental. TV channels with a guide, channel up/down and fullscreen, plus your own
   direct MP4 links added from your phone. Picture only while parked, video only. Needs internet
-  through the Store's uplink. 0.4.2 adds instant resume after driving, a HUD button, and parked-only cluster video on the centre, full, left or right screen.
+  through the Store's uplink. 0.4.3 adds instant resume after driving, a HUD button, and parked-only video in the cluster's centre map area.
 
 ## Install
 

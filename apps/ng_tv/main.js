@@ -51,7 +51,11 @@
  * Right (the video in that gauge's 640x720 third, letterboxed, everything else see-through): the panel
  * target, tv_cluster.js. Full / Left / Right and the HUD share a scene: one at a time, as all outputs are
  * (turning one on turns the other off, with a message).
- * Every safety rule unchanged: the picture on the HUD and every cluster screen only through the parked gate (speed known and at
+ * 0.4.3: the cluster plays in the centre map area only (the original, proven mode): Cluster screen and
+ * its Full / Left / Right are gone, and so is the settings page's Cluster group. Play in cluster is the
+ * Cluster button alone (one tap, as before), its on / off kept in settings.json under 'cluster' as the
+ * HUD's is; a saved Cluster screen is deleted on start (app.json retiredSettings).
+ * Every safety rule unchanged: the picture on the HUD and the cluster only through the parked gate (speed known and at
  * most 3 km/h, P, 2 s settled; dropped on the gear / speed signal itself), off while moving, one output
  * at a time, never the alert class, never 7702 / 7703. Without the Cluster renderer tool the button says
  * so and stays off. The HUD test, the panel tests, Pictures (always Auto), Colours (always M Tricolour) and Renderer
@@ -88,7 +92,6 @@ const WARM_MS = Math.min(30 * 60000, Number(process.env.GSTV_WARM_MS) || 30 * 60
 const WARM_BYTES = 8 * 1024 * 1024; // fetched samples kept while paused (the keyframe's chunk always)
 const WARM_FREE_MB = 96;            // MemAvailable below this: memory is tight, the warm state goes
 const WARM_RSS_MB = 420;            // or the app itself above this
-const SCREEN_NAME = { centre: 'Centre', full: 'Full', left: 'Left', right: 'Right' };   // Cluster screen
 const AFTER_NAME = { resume: 'Resume where I stopped', live: 'Jump to what\'s on now' };
 const BANNER_MS = 4000;             // the channel banner after a change
 const CONTROLS_MS = 5000;           // the controls over the picture, after a tap
@@ -184,11 +187,8 @@ mgu.run({
         const tapped = tapSignals(ctx, () => onSignal());
         const car = new Car(tapped, ['gear']);
         const parked = parkedWatch.watch(tapped, log);
-        const cluster = new ClusterOut({ log, app: ctx.spec.id || 'ng_tv' });              // Cluster screen Centre
+        const cluster = new ClusterOut({ log, app: ctx.spec.id || 'ng_tv' });              // the map area
         const hud = new ClusterOut({ log, app: ctx.spec.id || 'ng_tv', target: 'hud' });
-        const screen = () => { const v = settings.get('clusterScreen'); return SCREEN_NAME[v] && v !== 'centre' ? v : 'centre'; };
-        const panel = new ClusterOut({ log, app: ctx.spec.id || 'ng_tv', target: screen() === 'centre' ? 'full' : screen() });  // Full / Left / Right
-        const clOut = () => (screen() === 'centre' ? cluster : panel);
         // Cluster and HUD keep their choice (one at a time: should both have been saved on, Cluster wins)
         if (settings.get('hud') && settings.get('cluster')) settings.set('hud', false);
 
@@ -240,7 +240,7 @@ mgu.run({
                 const toCluster = !!settings.get('cluster'), toHud = !!settings.get('hud');
                 if (toCluster || toHud) {
                     if (gate().ok) {                           // the gate again, now, before each cluster / HUD picture
-                        if (toCluster) clOut().write(f);
+                        if (toCluster) cluster.write(f);
                         if (toHud) hud.write(f);
                     } else gateStep();                         // closes the gate and takes the picture off
                 }
@@ -250,7 +250,6 @@ mgu.run({
             if (player.state === 'paused') { if (!warmAt) warmAt = Date.now(); } else if (player.state !== 'buffering') warmAt = 0;
             if (/^(idle|tuning|paused|offline|error)$/.test(player.state)) {
                 cluster.stop();
-                panel.stop();
                 hud.stop();
             }
             labels();
@@ -450,7 +449,6 @@ mgu.run({
         }
         function blank(why) {
             cluster.stop();                                    // first: the cluster and HUD pictures go at once
-            panel.stop();
             hud.stop();
             img.clear();
             const gpu = ctx.display && ctx.display.gpu;
@@ -539,10 +537,9 @@ mgu.run({
         ui.onClick('BTN_CHDN', () => { if (page !== 'watch' || !src) openLast(); else chStep(-1); });
         ui.onClick('BTN_MORE', () => ui.open('MORE'));
 
-        /* ----- Cluster ('cluster', on the 'clusterScreen'), HUD ('hud', 0.4.2: the button only): off by default ----- */
-        // One tap turns either on or off (the buttons, the own settings page, the HMI's More menu checkbox);
-        // what reaches the car is still gated (parked only, see the gate). One at a time: the panel screens
-        // (Full / Left / Right) and the HUD share a scene id, and the centre's too was always one at a time.
+        /* ----- Cluster ('cluster'), HUD ('hud'): the buttons only (0.4.3 / 0.4.2), off by default ----- */
+        // One tap turns either on or off; what reaches the car is still gated (parked only, see the gate).
+        // One at a time, as always.
         const OUT = {
             cluster: { name: 'Cluster' },
             hud: { name: 'HUD', needsTool: true },
@@ -563,26 +560,14 @@ mgu.run({
             const was = Object.keys(OUT).filter((o) => o !== k && settings.get(o))[0];
             okKey = k;
             try { settings.set(k, true); } finally { okKey = ''; }
-            const name = k === 'cluster' ? 'Cluster ' + SCREEN_NAME[screen()] : 'HUD';
-            if (was) say(OUT[was].name + ' off - ' + name + ' on (one at a time, parked only)', 3500);
-            else if (k === 'cluster') say('Cluster: ' + SCREEN_NAME[screen()] + ' (parked only)');
-            else say('HUD: on (parked only)');
+            if (was) say(OUT[was].name + ' off - ' + OUT[k].name + ' on (one at a time, parked only)', 3500);
+            else say(OUT[k].name + ': on (parked only)');
         }
-        /** Cluster on / off and where: the map area's connection, or the panel's at Full / Left / Right. */
+        /** Cluster on / off: the map area's connection. */
         function applyCluster() {
-            const on = !!settings.get('cluster'), s = screen();
-            if (s !== 'centre') panel.place(s);
-            cluster.enable(on && s === 'centre');
-            panel.enable(on && s !== 'centre');
+            cluster.enable(!!settings.get('cluster'));
         }
         settings.onChange((key, value) => {
-            if (key === 'clusterScreen') {
-                if (settings.get('cluster')) { cluster.stop(); panel.stop(); say('Cluster: ' + SCREEN_NAME[screen()]); }
-                applyCluster();
-                log.info('cluster screen: ' + screen());
-                labels();
-                return;
-            }
             if (!OUT[key]) return;
             if (value) {
                 Object.keys(OUT).forEach((k) => {
@@ -594,7 +579,7 @@ mgu.run({
                 });
             }
             if (key === 'cluster') {
-                if (!value) { cluster.stop(); panel.stop(); }
+                if (!value) cluster.stop();
                 applyCluster();
             } else {
                 if (!value) hud.stop();
@@ -607,7 +592,7 @@ mgu.run({
         hud.enable(!!settings.get('hud'));                    // 0.4.2: kept across restarts, as Cluster's
         const clusterText = (s) => (/^Cluster /.test(s.text) ? s.text : 'Cluster: ' + s.text);
         function outStatus(playing) {
-            if (settings.get('cluster')) { const cs = clOut().status(gateOpen, playing); return { level: cs.level, text: clusterText(cs) }; }
+            if (settings.get('cluster')) { const cs = cluster.status(gateOpen, playing); return { level: cs.level, text: clusterText(cs) }; }
             if (settings.get('hud')) { const hs = hud.status(gateOpen, playing); return { level: hs.level, text: 'HUD: ' + hs.text }; }
             return null;
         }
@@ -622,7 +607,6 @@ mgu.run({
             try { savePos(); } catch (e) { /* gone */ }
             try { cluster.close(); } catch (e) { /* gone */ }
             try { hud.close(); } catch (e) { /* gone */ }
-            try { panel.close(); } catch (e) { /* gone */ }
             try { shm.remove(); } catch (e) { /* gone */ }
         };
         process.on('exit', cleanup);
@@ -1019,13 +1003,11 @@ mgu.run({
                     if (isPlay) { cv.fillRect(px - 11, py - 13, 8, 26, gc); cv.fillRect(px + 3, py - 13, 8, 26, gc); }
                     else tri(cv, [[px - 10, py - 14], [px + 14, py], [px - 10, py + 14]], gc);
                 }],
-                // 0.4.2: the label names the Cluster screen when it isn't the centre; the glyph shows where it plays
-                ['cluster', (settings.get('cluster') ? (screen() === 'centre' ? 'Cluster on' : SCREEN_NAME[screen()] + ' on') : screen() === 'centre' ? 'Cluster' : 'Cluster ' + SCREEN_NAME[screen()]), () => toggleOut('cluster'), (px, py) => {
-                    const c = settings.get('cluster') ? (t.sel || t.accent) : t.text, s = screen();
+                // the cluster (the map area between the dials; one tap, on / off shown); the glyph: the two dials
+                ['cluster', settings.get('cluster') ? 'Cluster on' : 'Cluster', () => toggleOut('cluster'), (px, py) => {
+                    const c = settings.get('cluster') ? (t.sel || t.accent) : t.text;
                     cv.strokeRoundRect(px - 24, py - 11, 48, 22, 11, 3, c);
-                    if (s === 'centre') { cv.circle(px - 12, py, 4, c); cv.circle(px + 12, py, 4, c); }
-                    else if (s === 'full') cv.fillRect(px - 17, py - 5, 34, 10, c);
-                    else cv.fillRect(s === 'left' ? px - 18 : px + 6, py - 6, 12, 12, c);
+                    cv.circle(px - 12, py, 4, c); cv.circle(px + 12, py, 4, c);
                 }],
                 // 0.4.2: the HUD, like Cluster (one tap, on / off shown); the glyph: the windscreen with the HUD's box in it
                 ['hud', settings.get('hud') ? 'HUD on' : 'HUD', () => toggleOut('hud'), (px, py) => {
@@ -1411,16 +1393,11 @@ mgu.run({
                 null, ok ? { solid: on, fg: '#000000' } : { fg: t.dim });
         }
 
-        const SCREEN_LONG = { centre: 'Centre (map area)', full: 'Full (whole cluster)', left: 'Left (left gauge)', right: 'Right (right gauge)' };
-        // 0.4.2: four settings in two groups, a column each: playback (left), the cluster (right)
+        // 0.4.3: two settings, one group (Cluster and HUD are the picture's buttons)
         const SET_COLS = [
             ['Playback', [
                 ['maxFps', 'At most (GPU video)', (v) => v + ' fps'],
                 ['afterDrive', 'After driving (Spelunkr)', (v) => AFTER_NAME[v] || AFTER_NAME.resume],
-            ]],
-            ['Cluster (parked)', [
-                ['cluster', 'Play in cluster (parked)', (v) => (v ? 'On' : 'Off')],
-                ['clusterScreen', 'Cluster screen', (v) => SCREEN_LONG[v] || SCREEN_LONG.centre],
             ]],
         ];
         function drawSettings(cv, t, A) {
@@ -1442,7 +1419,7 @@ mgu.run({
                 ['Video', inf.w ? 'H.264 ' + (inf.profile === 100 ? 'High' : inf.profile === 77 ? 'Main' : 'profile ' + inf.profile) + ', ' + inf.w + 'x' + inf.h + ', ' + inf.srcFps.toFixed(2) + ' fps' : '-'],
                 ['Decoder', inf.decMs ? 'WebAssembly, ' + inf.decMs.toFixed(1) + ' ms a picture' + (inf.light ? ' (light)' : '') : 'WebAssembly (FFmpeg H.264)'],
                 ['Output', pathName()],
-                ['Cluster', settings.get('cluster') ? SCREEN_NAME[screen()] + ': ' + clOut().status(gateOpen, gateOpen && player.state === 'playing').text : 'Off (' + SCREEN_NAME[screen()] + ', Cluster button)'],
+                ['Cluster', settings.get('cluster') ? cluster.status(gateOpen, gateOpen && player.state === 'playing').text : 'Off (Cluster button)'],
                 ['HUD', settings.get('hud') ? hud.status(gateOpen, gateOpen && player.state === 'playing').text : 'Off (HUD button)'],
                 ['Sound', 'None yet: no verified way for an app to play audio'],
                 ['Sources', 'Spelunkr: the Internet Archive, no DRM. Mine: ' + store.list().length + ' of ' + Src.MAX_SOURCES],
@@ -1453,8 +1430,8 @@ mgu.run({
                 cv.text(fit(cv, l[1], 22, colW - 150), A.x + 150, y, 22, l[0] === 'Sound' ? on : t.text, { literal: true });
                 y += 46;
             });
-            // two columns, a group each (the group's name over its rows), rows of one height, from the top
-            const cg = 12, cw = (colW - cg) / 2, per = 2, rgap = 10;
+            // the group (its name over its rows) in the right column, rows of one height, from the top
+            const cg = 12, cw = colW / SET_COLS.length - (SET_COLS.length - 1) * cg / SET_COLS.length, per = 2, rgap = 10;
             const rh = Math.min(96, (A.bottom - (top + 36) - (per - 1) * rgap) / per);
             const rows = [];
             SET_COLS.forEach((g, ci) => {
