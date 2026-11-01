@@ -78,6 +78,10 @@
  *     top over the last 2000 rpm before the shift point (a flash from it); any drive mode. No speed limit.
  *     Hidden on values over 300 ms old, no speed signal, demo data or a renderer error, and while G's TV
  *     plays on the HUD (back about 1 s after). The panel and the HUD share one scene: one at a time.
+ *   - Full-screen cluster test (0.12.0, fcluster.js / fcluster_core.js, Options > Diagnostics, TEST): classic
+ *     twin round dials over the whole cluster panel (1920 x 720), any gear or speed; covers the car's warning
+ *     lights while on. Off by default and never saved (fcTest lives in memory only). The skins and the HUD
+ *     are paused while it is on; it fades to stock on late values or anything wrong.
  *
  * Built on the idrive7-apps kit (kit/runtime). Node 8: no optional chaining, no ?? and no object spread.
  */
@@ -102,6 +106,7 @@ const CL = require('./cluster_logo');
 const CSRC = require('./cluster_source');
 const CS = require('./cluster_skin');
 const HS = require('./hud_shift');
+const FCL = require('./fcluster');
 const P = require('./px');
 const PREFS = require('./prefs');
 const CLOCK = require('./clock');
@@ -115,7 +120,7 @@ const lookOf = (id) => LOOKS.find((l) => l.id === id) || LOOKS.find((l) => l.id 
 const MPH = 1.609344;
 const TRAIL_MS = 3000;
 const OIL_READY_F = 194, COOLANT_READY_F = 176, HYST_F = 4;
-const VERSION = '0.11.3';
+const VERSION = '0.12.0';
 // Warm-up: the rev limit is COLD_RPM at or below COLD_F oil, rising (250 rpm steps) to WARM_REDLINE at
 // the "oil temp for full revs" setting. Auto-jump: AUTO_MS after READY it opens Drive.
 const COLD_RPM = 4000, COLD_F = 104, WARM_REDLINE = 6000, OIL_FULL_F = 180, AUTO_MS = 5000;
@@ -252,6 +257,11 @@ mgu.run({
         const hud = new HS.HudShift({ log, app: 'ng_gsdash', load: (f) => PNG.decode(fs.readFileSync(path.join(__dirname, f))) });
         const hudOn = () => displays() === 'hud';
         let skinMode = 'skin', refreshedAt = -1e15;
+        // 0.12.0: Diagnostics > Full-screen cluster test (TEST): classic round dials over the whole cluster panel
+        // (fcluster.js). Off by default and held here only - never a setting, never saved: off again after every
+        // app or head unit restart. While on, the cluster skins and the HUD are paused (they share the scene).
+        let fcTest = false;
+        const fcl = new FCL.FullCluster({ log, app: 'ng_gsdash', load: (f) => PNG.decode(fs.readFileSync(path.join(__dirname, f))) });
         const SPEED_IFACE = 'de.bmw.infotainment.vehicle.Vehicle2';
         // the Cluster source pick (0.8.3, cluster_source.js): setting "clusterSource", shared with G's Music and
         // G's TV in CSRC.SOURCE_DIR (written only here: at start, on a change and on Refresh cluster)
@@ -278,30 +288,35 @@ mgu.run({
             const d = car.data();
             clogoUpdate(open);
             const sub = car.subBy ? car.subBy[SPEED_IFACE] : null;
-            cskin.update({ on: !!open && (skinOn() || skinMode !== 'skin'), enabled: skinOn() || skinMode !== 'skin', look: look().id, mode: skinMode, data: d,
-                speedAvail: !!(sub && sub.available && !sub.error), gear: L.gearText(d.gear, d.stage), at: car.at || null });
+            const speedAvail = !!(sub && sub.available && !sub.error);
+            // 0.12.0: the full-screen cluster test pauses the skins and the HUD (closed for them while it is on)
+            cskin.update({ on: !!open && !fcTest && (skinOn() || skinMode !== 'skin'), enabled: skinOn() || skinMode !== 'skin', look: look().id, mode: skinMode, data: d,
+                speedAvail, gear: L.gearText(d.gear, d.stage), at: car.at || null });
             const redline = num('redline', 6500);
-            hud.update({ on: !!open && hudOn() && skinMode === 'skin', enabled: hudOn(), look: look().id, data: d, gear: L.gearText(d.gear, d.stage),
+            hud.update({ on: !!open && !fcTest && hudOn() && skinMode === 'skin', enabled: hudOn(), look: look().id, data: d, gear: L.gearText(d.gear, d.stage),
                 at: car.at || null, redline, shift: redline - (Number(settings.get('shiftBefore')) || 0) });
+            // any gear, any speed; night: G's Dash has no day / night signal from the car (no look switches), so day
+            fcl.update({ on: !!open && fcTest, enabled: fcTest, data: d, speedAvail, at: car.at || null, night: false, clock: clock.now() });
         };
         // the skins' live path (0.8.1): every speed / rpm / accel sample straight on, not at the loop's 10 fps
         car.onSample(() => {
             if (cskin.want) { const d = car.data(); cskin.sample(d, car.at || null, L.gearText(d.gear, d.stage)); }
             if (hud.want) { const d = car.data(); hud.sample(d, car.at || null, L.gearText(d.gear, d.stage)); }
+            if (fcl.want) fcl.sample(car.data(), car.at || null);
         });
         /** Diagnostics > Refresh cluster: every G's Dash layer in the cluster dropped and made again */
         const refreshCluster = () => {
-            const a = clogo.refresh(), b = cskin.refresh(), c = hud.refresh();
+            const a = clogo.refresh(), b = cskin.refresh(), c = hud.refresh(), f = fcl.refresh();
             publishSource('refresh');
             refreshedAt = Date.now();
-            log.info('refresh cluster: logo ' + (a ? 'remade' : 'not up') + ', skin ' + (b ? 'remade' : 'not up') + ', hud ' + (c ? 'remade' : 'not up'));
+            log.info('refresh cluster: logo ' + (a ? 'remade' : 'not up') + ', skin ' + (b ? 'remade' : 'not up') + ', hud ' + (c ? 'remade' : 'not up') + (f ? ', full-screen test remade' : ''));
         };
         if (ui.onVisible) ui.onVisible((st, on) => { if (st === 'MAIN') logoUpdate(on); });
         settings.onChange((k) => {
             if (k === 'clusterSource') publishSource('change');
             if (k === 'clusterSource' || k === 'clusterLogo' || k === 'displays' || k === 'look' || k === 'redline' || k === 'shiftBefore') logoUpdate(ui.isVisible ? ui.isVisible('MAIN') : true);
         });
-        process.once('exit', () => { clearInterval(bgLogo); clogo.close(); cskin.close(); hud.close(); });
+        process.once('exit', () => { clearInterval(bgLogo); clogo.close(); cskin.close(); hud.close(); fcl.close(); });
         // route guidance (0.7.4, 0.7.5): the logo steps aside while it runs, and only then (or for G's TV). The stock navigation's guidingState
         // (INACTIVE / CALCULATING_ROUTE / ACTIVE) and the phone's projectedGuidanceActive (CarPlay: Waze
         // or Maps with a route; Android Auto), all app.json "_optional"; read again every GUIDE_POLL_MS
@@ -965,8 +980,10 @@ mgu.run({
             head('Tools', x + 14, y); y += 28;
             tools().forEach((tv) => { put(x + 14, y, w - 28, tv[0] + ': ' + tv[1], tv[1] === 'not installed' ? '#ffb020' : t.text); y += LH; });
             y += 10; head('Now', x + 14, y); y += 28;
-            const parts = [['Logo', clogo.view()], ['Skins', skinOn() ? cskin.view() : { kind: 'off', text: 'Off (' + displaysLine() + ')' }],
-                ['HUD', hudOn() ? hud.view() : { kind: 'off', text: 'Off (' + displaysLine() + ')' }]];
+            const paused = { kind: 'pending', text: 'Paused (full-screen cluster test)' };
+            const parts = [['Logo', clogo.view()], ['Skins', fcTest ? paused : skinOn() ? cskin.view() : { kind: 'off', text: 'Off (' + displaysLine() + ')' }],
+                ['HUD', fcTest ? paused : hudOn() ? hud.view() : { kind: 'off', text: 'Off (' + displaysLine() + ')' }]];
+            if (fcTest) parts.push(['Full-screen', fcl.view()]);
             parts.forEach((p) => {
                 const tone = logoTone(t, p[1].kind);
                 if (tone) cv.circle(x + 20, y - 6, 5, tone);
@@ -1001,9 +1018,29 @@ mgu.run({
             x = S.x + 2 * (colW + 16); y = top + 30;
             diagBox(cv, x, top, w, S.h);
             head('Renderer refusals', x + 14, y); y += 28;
-            const ref = [['Skins', cskin.refusal()], ['HUD', hud.refusal()]].filter((r) => r[1]);
+            const ref = [['Skins', cskin.refusal()], ['HUD', hud.refusal()], ['Full-screen test', fcl.refusal()]].filter((r) => r[1]);
             if (!ref.length) { put(x + 14, y, w - 28, 'None', t.dim); y += LH; }
             ref.forEach((r) => { wrapLines(cv, r[0] + ' refused: ' + r[1], 15, w - 28, 4).forEach((l) => { put(x + 14, y, w - 28, l, t.warn || t.crit, 15); y += 20; }); y += 6; });
+            // 0.12.0: the full-screen cluster test (TEST): off by default, never saved, any gear or speed
+            {
+                const fh3 = 150, fy3 = top + S.h - 70 - 40 - 26 - fh3, x3 = x + 14, w3 = w - 28, acc3 = t.sel || t.accent;
+                cv.roundRect(x3, fy3, w3, fh3, u.radius, L.withAlpha(fcTest ? acc3 : '#ffffff', fcTest ? 0.18 : 0.05));
+                cv.strokeRoundRect(x3, fy3, w3, fh3, u.radius, fcTest ? 2 : 1, fcTest ? acc3 : L.withAlpha('#ffffff', 0.16));
+                cv.text('Full-screen cluster test', x3 + 16, fy3 + 34, 20, t.text, { font: 'bold', literal: true });
+                cv.text('TEST', x3 + 16 + cv.textWidth('Full-screen cluster test', 20, { font: 'bold', literal: true }) + 12, fy3 + 33, 13, '#ffb020', { font: 'bold', literal: true });
+                const sw = 66, sh = 34, sx = x3 + w3 - 16 - sw, sy = fy3 + 14;
+                cv.roundRect(sx, sy, sw, sh, sh / 2, fcTest ? acc3 : L.withAlpha('#ffffff', 0.18));
+                cv.circle(fcTest ? sx + sw - sh / 2 : sx + sh / 2, sy + sh / 2, sh / 2 - 4, '#ffffff');
+                const ls = [fcTest ? 'On: classic round dials over the whole cluster panel.' : 'Off. Classic round dials over the whole cluster panel.',
+                    'Covers the car\'s warning lights while on.',
+                    'Pauses the skins and HUD. Off again after a restart.'];
+                ls.forEach((l, i) => put(x3 + 16, fy3 + 70 + i * 24, w3 - 32, l, i === 1 ? '#ffb020' : i ? t.dim : t.text, 16));
+                cv.target(x3, fy3, w3, fh3, () => {
+                    fcTest = !fcTest;
+                    log.info('full-screen cluster test: ' + (fcTest ? 'on (the skins and HUD paused)' : 'off'));
+                    logoUpdate(visible());
+                }, 'dg:fctest', u.radius);
+            }
             const d2 = car.data(), parked = L.isNum(d2.speed) && d2.speed < 1 && d2.stage !== 'D' && d2.stage !== 'R';
             const bw2 = (w - 28 - 12) / 2, by2 = top + S.h - 70, bh2 = 56;
             head('Cluster skins (parked)', x + 14, by2 - 40);
@@ -1275,7 +1312,7 @@ mgu.run({
                 cv.text(fitText(cv, o[2], 16, rw - 70), rx + 58, oy + 60, 16, t.dim, { literal: true });
                 if (!on) cv.target(rx, oy, rw, oh, () => { gDown = Date.now(); downKey = 'disp:' + o[0]; settings.set('displays', o[0]); log.info('displays: ' + o[0]); }, 'disp:' + o[0], u.radius);
             });
-            const st = dcur === 'skin' ? cskin.view() : dcur === 'hud' ? hud.view() : null, dy = top + 3 * (oh + og) + 18;
+            const st = fcTest && dcur !== 'none' ? { kind: 'pending', text: 'Paused (full-screen cluster test)' } : dcur === 'skin' ? cskin.view() : dcur === 'hud' ? hud.view() : null, dy = top + 3 * (oh + og) + 18;
             if (st) { cv.circle(rx + 7, dy - 6, 6, logoTone(t, st.kind) || t.dim); cv.text(fitText(cv, st.text, 17, rw - 22), rx + 22, dy, 17, t.text, { literal: true }); }
             else cv.text(fitText(cv, "Nothing of ours on the dials or HUD", 17, rw), rx, dy, 17, t.dim, { literal: true });
             cv.text(fitText(cv, 'One at a time: they share one display layer.', 15, rw), rx, dy + 26, 15, t.dim, { literal: true });
