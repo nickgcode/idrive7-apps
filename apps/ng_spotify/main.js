@@ -9,7 +9,7 @@
  * your account plays on - the phone that is connected to the car included. Player commands need
  * Spotify Premium. Sign-in: the not-connected screen (and the settings page's Sign in with phone)
  * shows a QR code; the phone signs in and the car fetches the result itself (signin.js, end-to-end
- * encrypted, PKCE verifier never leaves the car). Fallback: tools/spotify_auth.py on a computer.
+ * encrypted, PKCE verifier never leaves the car).
  *
  * A full-screen touch app ("fullscreen": true in app.json, kit/runtime/fullscreen.js): the page is the
  * whole screen under the HMI's status strip and every control is a touch target on it (cv.target):
@@ -453,7 +453,7 @@ mgu.run({
         ui.onClick('BTN_MORE', () => ui.open('MORE'));
         ui.onClick('BTN_SIGNIN', startQr);
         // No 'Reload sign-in file' (0.5.1): the phone sign-in writes spotify-auth.json and polls at once, and
-        // a file copied in from tools/spotify_auth.py is read on the next poll anyway (spotify.js loadAuth()
+        // a spotify-auth.json put into the data folder by hand is read on the next poll anyway (spotify.js loadAuth()
         // re-reads it when its mtime changes, and a new file clears a refused sign-in).
 
         /* ----- HMI labels (only on change) ----- */
@@ -480,9 +480,9 @@ mgu.run({
             return status === 'noauth' && qrOn ? 'Not signed in: scan the QR code on the ' + NAME + ' screen'
                 : status === 'reauth' && qrOn ? 'Sign-in needs renewing: scan the QR code on the ' + NAME + ' screen'
                 : qrMode && qs.active() ? 'Phone sign-in: scan the QR code on the ' + NAME + ' screen'
-                : status === 'noauth' ? 'Not signed in: copy spotify-auth.json to ' + ctx.dataDir
+                : status === 'noauth' ? 'Not signed in: phone sign-in (QR) is not set up (signin_config.js)'
                 : status === 'offline' ? 'No internet: connect the phone hotspot / Wi-Fi uplink'
-                : status === 'reauth' ? 'Sign-in not accepted: run tools/spotify_auth.py again'
+                : status === 'reauth' ? 'Sign-in not accepted: phone sign-in (QR) is not set up (signin_config.js)'
                 : status === 'error' ? 'Spotify: ' + detail
                 : status === 'starting' ? 'Connecting to Spotify...'
                 : ['Signed in', pb && pb.device ? 'playing on ' + pb.device : 'nothing playing', expiry()].filter(Boolean).join(' | ');
@@ -837,7 +837,7 @@ mgu.run({
             else if (qs.phase === 'error') line('', qs.message, t.warn);
             else line('', 'Waiting for the phone' + (qs.message ? ' (' + qs.message + ')' : '') + '   new code in ' + mm + ':' + (ss < 10 ? '0' : '') + ss, t.dim, 22);
             if (status === 'reauth') line('', 'A sign-in lasts 6 months at most (Spotify).', t.dim, 20);
-            line('', 'Phone and car both need internet. No phone? tools/spotify_auth.py on a computer.', t.dim, 20);
+            line('', 'Phone and car both need internet.', t.dim, 20);
             // buttons along the bottom, the G at the end
             const bw = (Q.dockR - X - 16) / 2;
             action(cv, t, 'qr:new', X, Q.DY, bw, DOCK_H, 'New code', () => { qrErrorAt = 0; qs.start(knownClientId()); say('New sign-in code'); });
@@ -869,11 +869,11 @@ mgu.run({
             } else {
                 if (detail) line('', detail, t.warn);
                 if (status === 'reauth') line('', 'A sign-in lasts 6 months at most (Spotify); sign in again:', t.dim);
-                if (!qs.configured()) line('', 'Phone sign-in (QR) is off: set the relay in signin_config.js (docs/spotify.md).', t.dim);
-                line('1', 'On a computer: python3 tools/spotify_auth.py --client-id <your app\'s Client ID>');
-                line('2', 'Copy the spotify-auth.json it writes to this folder on the car:');
-                line('', ctx.dataDir, on);
-                line('3', 'The app reads it within a few seconds.');
+                if (!qs.configured()) {
+                    line('', 'Sign-in is with your phone (QR code), and it is not set up in this copy of the app:', t.dim);
+                    line('1', 'Put the sign-in page\'s https address (relay) into signin_config.js (docs/spotify.md).');
+                    line('2', 'Reinstall the app, then scan the QR code it shows with your phone.');
+                } else line('', 'Preparing the sign-in code...', t.dim);
             }
             const bw = (Q.dockR - X - 16) / 2;
             action(cv, t, 'setup:retry', X, Q.DY, bw, DOCK_H, 'Try again', () => { nextPoll = 0; return poll(); });

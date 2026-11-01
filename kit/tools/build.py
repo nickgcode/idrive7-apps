@@ -13,7 +13,7 @@ The RHMI layout (application.xml + uiDescription.json) is GENERATED from the
 "screens" + "settings" in app.json, using only widget templates that BMW's own
 apps use on this firmware (see reference/rhmi-widget-cells.md).
 """
-import json, os, re, shutil, sys, tarfile, tempfile, uuid
+import json, os, re, shutil, subprocess, sys, tarfile, tempfile, uuid
 from xml.sax.saxutils import escape
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pack_data  # noqa: E402
@@ -317,8 +317,15 @@ def make_icon(spec, out):
     if os.path.exists(src):
         shutil.copy(src, out)
         return
-    # rendered by the kit's own canvas (node) so no extra tooling is needed
-    os.system(f'node "{os.path.join(HERE, "make_icon.js")}" "{spec.get("iconGlyph", spec["title"][:2])}" "{out}"')
+    # rendered by the kit's own canvas (node) so no extra tooling is needed; an argument list, no shell,
+    # so a glyph or title with quotes or $ is passed through as-is
+    cmd = ['node', os.path.join(HERE, 'make_icon.js'), str(spec.get('iconGlyph', spec['title'][:2])), out]
+    try:
+        r = subprocess.run(cmd)
+    except OSError as e:
+        sys.exit('%s: cannot render the app icon (%s); is node on PATH?' % (spec['id'], e))
+    if r.returncode != 0 or not os.path.isfile(out):
+        sys.exit('%s: make_icon.js failed (exit %d), no icon written' % (spec['id'], r.returncode))
 
 
 WIDGET_COMPONENT_ID = 501

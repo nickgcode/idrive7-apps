@@ -2,9 +2,8 @@
 /**
  * spotify.js - a small Spotify Web API client for the head unit (Node 8, no npm modules).
  *
- * Auth: the Authorization Code with PKCE flow is done either on the car with the phone (signin.js: a QR
- * code, saveSignIn() below) or on a computer (tools/spotify_auth.py, the file then copied into the app's
- * data folder). Both give spotify-auth.json { client_id, refresh_token, ... }; from then on this client only refreshes (POST https://accounts.spotify.com/api/token,
+ * Auth: the Authorization Code with PKCE flow is done on the car with the phone (signin.js: a QR code,
+ * saveSignIn() below). It gives spotify-auth.json { client_id, refresh_token, ... }; from then on this client only refreshes (POST https://accounts.spotify.com/api/token,
  * grant_type=refresh_token, client_id - no secret with PKCE) and keeps the refresh token Spotify may
  * rotate, written atomically back into the same file. Nothing secret is in the package.
  *
