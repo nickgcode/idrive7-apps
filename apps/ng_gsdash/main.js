@@ -25,8 +25,15 @@
  *     renderer's shared glyph texture) and the right panel. Shift lights always in the Race colours,
  *     Simple always in M Tricolour (0.6.0 took those settings out). No demo data.
  *   - a home-screen widget (app.json startWidget): the G logo, large and centred (widget_logo.js).
- *   - Options > Cluster logo: the G's Dash logo in the cluster's map area while G's Dash is open and no
- *     route guidance runs (cluster_logo.js, setting "clusterLogo"; the guidance from the car's
+ *   - Options > Cluster source (0.8.3, cluster_source.js, setting "clusterSource", default Auto): what the
+ *     cluster's centre map area shows - Auto (as before: the logo while G's Dash is open, G's Music over it
+ *     while a track plays), Logo (also while G's Dash runs in the background), Music (G's Music's lyrics /
+ *     visualizer, the logo when nothing plays), Map (Waze on cluster's CarPlay map) or Stock (the car's own;
+ *     Waze on cluster has to be off). Route guidance always shows directions; G's TV only after its own
+ *     Cluster button, and it yields to route guidance. The pick is shared with G's Music and G's TV in
+ *     /dev/shm/ng-cluster/source.json, written only here (cluster_source.js has the rules).
+ *     The logo: the G's Dash logo in the cluster's map area while no
+ *     route guidance runs (cluster_logo.js, setting "clusterLogo" for Auto; the guidance from the car's
  *     navigation status and CarPlay's / Android Auto's, 0.7.4; 0.7.5: over Waze's map unless route
  *     guidance runs, shown too when no guidance signal answers; each signal's state on the page), and below it CarPlay's map on the
  *     instrument cluster (cluster.js), on / off, through the separately installed "Waze on cluster"
@@ -66,6 +73,7 @@ const DIAG = require('./diag');
 const ClusterMap = require('./cluster').ClusterMap;
 const Fuel = require('./fuel');
 const CL = require('./cluster_logo');
+const CSRC = require('./cluster_source');
 const CS = require('./cluster_skin');
 const HS = require('./hud_shift');
 const P = require('./px');
@@ -78,7 +86,7 @@ const lookOf = (id) => LOOKS.find((l) => l.id === id) || LOOKS[0];
 const MPH = 1.609344;
 const TRAIL_MS = 3000;
 const OIL_READY_F = 194, COOLANT_READY_F = 176, HYST_F = 4;
-const VERSION = '0.8.2';
+const VERSION = '0.8.3';
 // Warm-up: the rev limit is COLD_RPM at or below COLD_F oil, rising (250 rpm steps) to WARM_REDLINE at
 // the "oil temp for full revs" setting. Auto-jump: AUTO_MS after READY it opens Drive.
 const COLD_RPM = 4000, COLD_F = 104, WARM_REDLINE = 6000, OIL_FULL_F = 180, AUTO_MS = 5000;
@@ -167,9 +175,11 @@ mgu.run({
         };
 
         // the page: 0 = the hub (screen scr: HUB.SCREENS), 1 = Options (the G), 2 = Spotify, 3 = diagnostics,
-        // 4 = Cluster logo, 5 = Theme (2..5 go back to Options); the
+        // 4 = Cluster source, 5 = Theme (2..5 go back to Options); the
         // bar's Reset moves to the settings page (no bar: the page reaches the screen's bottom)
         let page = 0, armed = 0, gDown = 0, downKey = '';
+        // the screen is up (Spotify polls only then; the logo's background path, 0.8.3)
+        const visible = () => (ui.isVisible ? ui.isVisible('MAIN') : true);
         const SCR = (id) => HUB.SCREENS.findIndex((x) => x[0] === id);
         let scr = SCR(HUB.HOME);                 // the hub screen (HUB.SCREENS index): Drive, not index 0
         const go = (i) => { scr = i; };
@@ -198,9 +208,30 @@ mgu.run({
         if (hudOn() && skinOn()) settings.set('clusterSkin', 'off');
         let skinMode = 'skin', refreshedAt = -1e15;
         const SPEED_IFACE = 'de.bmw.infotainment.vehicle.Vehicle2';
+        // the Cluster source pick (0.8.3, cluster_source.js): setting "clusterSource", shared with G's Music and
+        // G's TV in CSRC.SOURCE_DIR (written only here: at start, on a change and on Refresh cluster)
+        const srcPick = () => (CSRC.valid(settings.get('clusterSource')) ? settings.get('clusterSource') : CSRC.DEFAULT);
+        let srcRev = 0, srcPub = { ok: false, text: '' };
+        const publishSource = (why) => {
+            srcRev++;
+            srcPub = CSRC.publish(srcPick(), srcRev);
+            if (srcPub.error) log.warn('cluster source: ' + srcPub.text);
+            else log.info('cluster source: ' + srcPick() + ' shared (' + why + ')');
+        };
+        publishSource('start');
+        /** The logo per the pick: Auto as before (open and clusterLogo on), Logo / Music also in the background, Map / Stock none. */
+        const clogoUpdate = (open) => {
+            const d = car.data(), src = srcPick();
+            clogo.update({ on: CSRC.logoWanted(src, open, settings.get('clusterLogo')), enabled: src === 'auto' ? logoOn() : (src === 'logo' || src === 'music'),
+                pixel: look().id === 'pixel', parked: L.isNum(d.speed) && d.speed < 1,
+                idleText: src === 'auto' ? 'On - while G\'s Dash is open' : 'Off - ' + CSRC.NAMES[src] + ' picked' });
+        };
+        // in the background (the screen's loop stops when it is hidden): the logo kept per the pick every second
+        const bgLogo = setInterval(() => { if (!visible()) clogoUpdate(false); }, 1000);
+        if (bgLogo.unref) bgLogo.unref();
         const logoUpdate = (open) => {
             const d = car.data();
-            clogo.update({ on: !!open && logoOn(), enabled: logoOn(), pixel: look().id === 'pixel', parked: L.isNum(d.speed) && d.speed < 1 });
+            clogoUpdate(open);
             const sub = car.subBy ? car.subBy[SPEED_IFACE] : null;
             cskin.update({ on: !!open && (skinOn() || skinMode !== 'skin'), enabled: skinOn() || skinMode !== 'skin', look: look().id, mode: skinMode, data: d,
                 speedAvail: !!(sub && sub.available && !sub.error), gear: L.gearText(d.gear, d.stage), at: car.at || null });
@@ -216,6 +247,7 @@ mgu.run({
         /** Options > Refresh cluster: every G's Dash layer in the cluster dropped and made again */
         const refreshCluster = () => {
             const a = clogo.refresh(), b = cskin.refresh(), c = hud.refresh();
+            publishSource('refresh');
             refreshedAt = Date.now();
             log.info('refresh cluster: logo ' + (a ? 'remade' : 'not up') + ', skin ' + (b ? 'remade' : 'not up') + ', hud ' + (c ? 'remade' : 'not up'));
         };
@@ -224,9 +256,10 @@ mgu.run({
             // one on turns the other off (whichever way it was set: Options or the settings list)
             if (k === 'hudShift' && hudOn() && skinOn()) { settings.set('clusterSkin', 'off'); say('Cluster skins turned off', 'HUD shift lights on'); }
             if (k === 'clusterSkin' && skinOn() && hudOn()) { settings.set('hudShift', 'off'); say('HUD shift lights turned off', 'Cluster skins on'); }
-            if (k === 'clusterLogo' || k === 'clusterSkin' || k === 'hudShift' || k === 'look' || k === 'redline' || k === 'shiftBefore') logoUpdate(ui.isVisible ? ui.isVisible('MAIN') : true);
+            if (k === 'clusterSource') publishSource('change');
+            if (k === 'clusterSource' || k === 'clusterLogo' || k === 'clusterSkin' || k === 'hudShift' || k === 'look' || k === 'redline' || k === 'shiftBefore') logoUpdate(ui.isVisible ? ui.isVisible('MAIN') : true);
         });
-        process.once('exit', () => { clogo.close(); cskin.close(); hud.close(); });
+        process.once('exit', () => { clearInterval(bgLogo); clogo.close(); cskin.close(); hud.close(); });
         // route guidance (0.7.4, 0.7.5): the logo steps aside while it runs, and only then (or for G's TV). The stock navigation's guidingState
         // (INACTIVE / CALCULATING_ROUTE / ACTIVE) and the phone's projectedGuidanceActive (CarPlay: Waze
         // or Maps with a route; Android Auto), all app.json "_optional"; read again every GUIDE_POLL_MS
@@ -259,8 +292,6 @@ mgu.run({
         const press = (to, key) => { gDown = Date.now(); downKey = key; setTimeout(() => { page = to; }, 140); };
         const isDown = (key) => downKey === key && Date.now() - gDown < 180;
 
-        // Spotify (setting "panel"): polled only while the panel or its page is on screen
-        const visible = () => (ui.isVisible ? ui.isVisible('MAIN') : true);
         // CarPlay's map on the cluster (cluster.js): the patch service's socket only while its page is open, apply /
         // revert only from the confirmation (ask: { cmd, at }, it goes after ASK_MS)
         const cmap = new ClusterMap(log);
@@ -535,7 +566,7 @@ mgu.run({
          * Options (the G): three columns. Theme: the current look's card and the right panel, a tap
          * opens the Theme page. Engine & warm-up: five stepped rows. G-meter & session, then Spotify &
          * cluster: the g-meter scale, the session peaks' reset (tap twice), the Spotify and Cluster
-         * logo pages. "G's Dash <version>" in the header: the hidden diagnostics page (TAPS taps).
+         * source pages. "G's Dash <version>" in the header: the hidden diagnostics page (TAPS taps).
          */
         function optionsPage(cv, S, lk) {
             const t = S.t, u = lk.ui, lbl = lblOf(cv, u), card = cardOf(lk), acc = t.sel || t.accent;
@@ -583,10 +614,12 @@ mgu.run({
                 if (Date.now() - armed < 5000) { armed = 0; reset(); log.info('peaks reset'); say('Peaks reset'); } else armed = Date.now();
             }, 'opt:reset', u.radius);
             linkRow(cv, S, lk, x2, s3(2), cw, RH3, 'opt:spotify', 'Spotify', music.statusLine(), () => press(2, 'opt:spotify'));
-            // the Cluster logo page, and beside it Refresh cluster (0.8.0): every G's Dash layer in the
+            // the Cluster source page (0.8.3), and beside it Refresh cluster (0.8.0): every G's Dash layer in the
             // cluster dropped and made again; "Cluster refreshed" for REFRESHED_MS
-            const lv = clogo.view(), lon = logoOn(), fw = 156, done = Date.now() - refreshedAt < REFRESHED_MS;
-            linkRow(cv, S, lk, x2, s3(3), cw - fw - 12, RH3, 'opt:cluster', 'Cluster logo', done ? 'Cluster refreshed' : lon ? lv.text : 'Off', () => { ask = null; press(4, 'opt:cluster'); }, done ? HUB.GREEN : lon ? logoTone(t, lv.kind) : null);
+            const lv = clogo.view(), src = srcPick(), fw = 156, done = Date.now() - refreshedAt < REFRESHED_MS;
+            const nc = done ? null : nowCard();
+            linkRow(cv, S, lk, x2, s3(3), cw - fw - 12, RH3, 'opt:cluster', 'Cluster source \u00b7 ' + CSRC.NAMES[src], done ? 'Cluster refreshed' : nc.title.replace(/^Now: /, ''),
+                () => { ask = null; press(4, 'opt:cluster'); }, done ? HUB.GREEN : nc.notes.some((x) => x[1] === 'warn') ? '#ffb020' : nc.tone === 'ok' ? HUB.GREEN : logoTone(t, lv.kind));
             const fb = { x: x2 + cw - fw, y: s3(3), w: fw, h: RH3 };
             card(cv, t, fb.x, fb.y, fb.w, fb.h, isDown('opt:refresh') || done);
             lbl(done ? 'Refreshed' : 'Refresh', fb.x + fb.w / 2, fb.y + Math.round(RH3 * 0.44), u.size, t.text, { align: 'center' });
@@ -816,73 +849,180 @@ mgu.run({
             });
             if (skinMode !== 'skin') cv.text(fitText(cv, 'Cluster: ' + cskin.view().text, 15, w - 28), x + 14, by2 - 8, 15, t.dim, { literal: true });
         }
-        /**
-         * The Cluster logo page: the logo first ("Logo in cluster when not navigating": Off / On and what
-         * it does now), then CarPlay's map on the cluster (Waze on cluster): Off / On (the patch service's
-         * state, nothing stored here), its status line, the map's line (when on); and what both need. A
-         * map change asks first (the confirmation, drawn over the page; the page's own targets are left
-         * out meanwhile).
+        /*
+         * The Cluster source page (0.8.3): what the cluster's centre map area shows. Five tiles (Auto, Logo,
+         * Music, Map, Stock: setting "clusterSource"), the Now card (what is there now and why, warnings),
+         * CarPlay's map on the cluster (Waze on cluster): Off / On (the patch service's state, nothing stored
+         * here; a change asks first: the confirmation, drawn over the page, the page's own targets left out
+         * meanwhile), and on the right the rules and Refresh cluster.
          */
+        const SRC_TILES = [
+            ['auto', 'As before: switches itself'],
+            ['logo', "G's Dash logo"],
+            ['music', 'Lyrics / visualizer'],
+            ['map', 'Waze / CarPlay map'],
+            ['stock', "The car's own"],
+        ];
+        /** A tile's small picture of the map area (1088 x 480): what the pick puts there. */
+        function srcThumb(cv, kind, x, y, w, h, sel) {
+            const r = 8;
+            if (kind === 'map') {
+                cv.roundRect(x, y, w, h, r, '#202830');
+                cv.line(x + 8, y + h * 0.72, x + w - 8, y + h * 0.40, 5, '#3a4752');
+                cv.line(x + w * 0.30, y + 6, x + w * 0.42, y + h - 6, 4, '#3a4752');
+                cv.line(x + w * 0.20, y + h - 8, x + w * 0.55, y + h * 0.55, 6, '#33ccff');
+                cv.line(x + w * 0.55, y + h * 0.55, x + w * 0.80, y + h * 0.22, 6, '#33ccff');
+                const ax = x + w * 0.24, ay = y + h - 16;
+                cv.quad([[ax, ay - 12], [ax + 9, ay + 8], [ax, ay + 3], [ax - 9, ay + 8]], '#ffffff');
+            } else if (kind === 'stock') {
+                cv.roundRect(x, y, w, h, r, '#0c1726');
+                for (let i = 1; i < 5; i++) cv.line(x + 6, y + i * h / 5, x + w - 6, y + i * h / 5 + 6, 2, '#1d3350');
+                for (let i = 1; i < 6; i++) cv.line(x + i * w / 6, y + 6, x + i * w / 6 - 8, y + h - 6, 2, '#1d3350');
+                cv.line(x + 10, y + h * 0.62, x + w - 10, y + h * 0.48, 5, '#355a86');
+                const ax = x + w / 2, ay = y + h * 0.55;
+                cv.quad([[ax, ay - 12], [ax + 9, ay + 9], [ax, ay + 4], [ax - 9, ay + 9]], '#e8eef6');
+            } else {
+                cv.roundRect(x, y, w, h, r, '#000000');
+                if (kind === 'logo') {
+                    const bh = h * 0.42, bw = L.badgeWidth(bh);
+                    L.badge(cv, x + (w - bw) / 2, y + (h + bh) / 2, bh);
+                } else if (kind === 'music') {
+                    cv.roundRect(x + w * 0.18, y + h * 0.20, w * 0.64, 9, 4, '#ffffff');
+                    cv.roundRect(x + w * 0.28, y + h * 0.40, w * 0.44, 6, 3, '#6b7079');
+                    const N = 17, g = (w * 0.76) / N;
+                    for (let i = 0; i < N; i++) {
+                        const bh = h * 0.30 * (0.25 + 0.75 * Math.abs(Math.sin(i * 0.9 + 0.6)));
+                        cv.roundRect(x + w * 0.12 + i * g, y + h * 0.74 - bh / 2, g * 0.5, bh, g * 0.25, i < 6 ? '#3ad0ff' : i < 12 ? '#7a6cff' : '#ff4fa3');
+                    }
+                } else {
+                    const bh = h * 0.30, bw = L.badgeWidth(bh);
+                    L.badge(cv, x + w * 0.27 - bw / 2, y + (h + bh) / 2, bh);
+                    for (let i = 0; i < 6; i++) { const bh2 = h * (0.15 + 0.3 * Math.abs(Math.sin(i * 1.3 + 0.4))); cv.roundRect(x + w * 0.58 + i * 9, y + h / 2 - bh2 / 2, 5, bh2, 2.5, i < 3 ? '#3ad0ff' : '#ff4fa3'); }
+                    cv.line(x + w / 2, y + 12, x + w / 2, y + h - 12, 1.5, L.withAlpha('#ffffff', 0.25));
+                }
+            }
+            cv.strokeRoundRect(x, y, w, h, r, 1, L.withAlpha('#ffffff', sel ? 0.35 : 0.16));
+        }
+        // G's Music's own Cluster setting (its state.json), read at most every MUSIC_READ_MS for the Now card
+        let musicSeen = { error: 'missing' }, musicReadAt = -1e15;
+        const MUSIC_READ_MS = 2000;
+        const musicState = () => {
+            const now = Date.now();
+            if (now - musicReadAt >= MUSIC_READ_MS) { musicReadAt = now; musicSeen = CSRC.readMusic(); }
+            return musicSeen;
+        };
+        /**
+         * The Now card: { title, sub, tone ('ok' | 'wait' | 'off'), notes: [[text, 'warn' | 'dim']] } from the
+         * pick, the logo's state, the route guidance and what the renderer says is drawing.
+         */
+        function nowCard() {
+            const src = srcPick(), name = CSRC.NAMES[src], lv = clogo.view(), mv = cmap.view(), notes = [];
+            const raw = clogo.guide.nav === true || clogo.guide.carplay === true || clogo.guide.aa === true;
+            const guiding = clogo.want ? (clogo.guiding || clogo.rawGuide) : raw;
+            const tv = clogo.want && clogo.others.some((l) => l.app === 'ng_tv');
+            const musicOn = clogo.want && clogo.under.some((l) => l.app === 'ng_spotify');
+            const ms = musicState();
+            let r;
+            if ((src === 'map' || src === 'stock') && guiding) r = { title: 'Now: directions (route guidance)', sub: src === 'map' ? 'In the map, as the phone sends them' : "The car's own directions", tone: 'ok' };
+            else if (src === 'map') r = { title: 'Now: Waze / CarPlay map', sub: "G's Dash and G's Music stay out of the cluster", tone: mv.on === true ? 'ok' : 'wait' };
+            else if (src === 'stock') r = { title: "Now: the car's own content", sub: "None of G's apps draw there", tone: mv.on === true ? 'wait' : 'ok' };
+            else if (guiding) r = { title: 'Now: directions (route guidance)', sub: 'Back to ' + name + ' when the route ends', tone: 'ok' };
+            else if (tv) r = { title: "Now: G's TV", sub: 'Back to ' + name + ' when it stops', tone: 'ok' };
+            else if (musicOn && src !== 'logo') r = { title: "Now: G's Music", sub: src === 'music' ? 'The logo when nothing plays' : 'Auto: the logo again when the track stops', tone: 'ok' };
+            else if (lv.kind === 'on') {
+                const sub = src === 'auto' ? "Auto: G's Music takes over while a track plays; the logo only while G's Dash is open"
+                    : src === 'logo' ? "Stays on the logo. G's Music stays out of the cluster."
+                        : 'Lyrics / visualizer as soon as a track plays';
+                r = { title: src === 'music' ? 'Now: Logo (nothing playing)' : 'Now: Logo', sub, tone: 'ok' };
+            } else r = { title: 'Logo: ' + lv.text, sub: src === 'auto' && !logoOn() ? 'Auto with "Logo in cluster" Off (settings list): nothing of ours' : '', tone: lv.kind === 'error' || lv.kind === 'none' ? 'off' : 'wait' };
+            if (src === 'music' && ms.cluster === 'off') notes.push(["G's Music's own Cluster setting is Off: it stays out (turn it on in G's Music)", 'warn']);
+            else if (src === 'music' && ms.error) notes.push(["G's Music not seen yet: open it once", 'dim']);
+            if (src === 'stock') notes.push([mv.on === true ? 'Waze on cluster is On: turn it Off below for the car\'s own map to show'
+                : 'The car\'s own map shows only with Waze on cluster Off (below)', mv.on === true ? 'warn' : 'dim']);
+            if (src === 'map' && mv.on !== true) notes.push([mv.kind === 'none' ? "Waze on cluster not installed: the car's own map shows" : 'Waze on cluster is not On: the car\'s own map shows', 'dim']);
+            if (src === 'logo' || src === 'music') notes.push(['Also in the background while G\'s Dash runs (gone if the head unit ends it)', 'dim']);
+            if (srcPub.error) notes.push(["Pick not shared (" + srcPub.text + "): G's Music and G's TV keep their last", 'warn']);
+            r.notes = notes;
+            return r;
+        }
         function clusterPage(cv, S, lk) {
             const t = S.t, u = lk.ui, lbl = lblOf(cv, u), card = cardOf(lk), acc = t.sel || t.accent;
             const mark = cv.targets ? cv.targets.length : 0;
-            header(cv, S, lk, lbl, card, 'Cluster logo', 1);
-            const v = cmap.view(), x0 = S.x, lw = 700;
+            header(cv, S, lk, lbl, card, 'Cluster source', 1);
+            const v = cmap.view(), x0 = S.x, LW = Math.round(S.w * 0.655), bottom = S.y + S.h, cur = srcPick();
             if (ask && (Date.now() - ask.at > ASK_MS || v.can !== ask.cmd)) ask = null;
-            // the logo in the map area (cluster_logo.js): Off / On, and what it does now
-            const lh = ROW_H + 12;
-            lbl('Logo', x0, S.y + 20, 18, t.dim);
-            logoRow(cv, S, lk, x0, S.y + 34, lw, lh);
-            // which guidance signal answers (0.7.5): n/a, no answer, no value, or its last value
-            cv.text(fitText(cv, clogo.routeLine(), 18, lw - 8), x0 + 4, S.y + 34 + lh + 26, 18, t.dim, { literal: true });
-            // CarPlay's map (Waze on cluster), below: the switch, two halves, the state's one lit; a tap
-            // on the other asks first
-            const my = S.y + 34 + lh + 40, top = my + 34;
-            lbl('CarPlay map in the cluster (Waze on cluster)', x0, my + 20, 18, t.dim);
-            const bw = (lw - 16) / 2, bh = 66;
+            lbl('In the cluster\'s centre (map area)', x0, S.y + 20, 18, t.dim);
+            // the five picks
+            const n = SRC_TILES.length, gap = 14, tw = (LW - (n - 1) * gap) / n, ty = S.y + 34;
+            const pw = tw - 24, ph = Math.round(pw * 480 / 1088), th = ph + 104;
+            SRC_TILES.forEach((s2, i) => {
+                const bx = x0 + i * (tw + gap), sel = cur === s2[0];
+                if (sel) { cv.roundRect(bx, ty, tw, th, u.radius, L.withAlpha(acc, 0.20)); cv.strokeRoundRect(bx, ty, tw, th, u.radius, 3, acc); }
+                else card(cv, t, bx, ty, tw, th, isDown('src:' + s2[0]));
+                srcThumb(cv, s2[0], bx + 12, ty + 12, pw, ph, sel);
+                const nm = CSRC.NAMES[s2[0]];
+                cv.text(u.upper ? nm.toUpperCase() : nm, bx + 16, ty + ph + 58, u.size + 8, t.text, { font: u.txt, spacing: u.upper ? u.spacing * 0.6 : 0, literal: true });
+                cv.text(fitText(cv, s2[1], 16, tw - 28), bx + 16, ty + ph + 88, 16, sel ? t.text : t.dim, { literal: true });
+                if (sel) {
+                    const cx = bx + tw - 30, cy = ty + ph + 48;
+                    cv.circle(cx, cy, 13, acc);
+                    cv.line(cx - 6, cy, cx - 1, cy + 5, 3, t.selText || '#ffffff'); cv.line(cx - 1, cy + 5, cx + 7, cy - 5, 3, t.selText || '#ffffff');
+                } else cv.target(bx, ty, tw, th, () => { gDown = Date.now(); downKey = 'src:' + s2[0]; settings.set('clusterSource', s2[0]); }, 'src:' + s2[0], u.radius);
+            });
+            // what the cluster shows now, and why
+            const nc = nowCard(), wh = ROW_H, wy = bottom - wh, sy = ty + th + 14, sh = wy - 14 - sy;
+            const tone = nc.tone === 'ok' ? HUB.GREEN : nc.tone === 'wait' ? '#ffb020' : t.dim;
+            cv.roundRect(x0, sy, LW, sh, u.radius, L.withAlpha('#ffffff', 0.04));
+            cv.strokeRoundRect(x0, sy, LW, sh, u.radius, 1, L.withAlpha('#ffffff', 0.12));
+            cv.circle(x0 + 28, sy + 28, 8, tone);
+            lbl(fitText(cv, nc.title, 26, LW - 70), x0 + 48, sy + 37, 26, t.text);
+            let ly = sy + 66;
+            const line = (s2, c, size) => { if (ly > sy + sh - 6) return; cv.text(fitText(cv, s2, size, LW - 48), x0 + 24, ly, size, c, { literal: true }); ly += size + 9; };
+            if (nc.sub) line(nc.sub, t.dim, 18);
+            nc.notes.forEach((nt) => line(nt[0], nt[1] === 'warn' ? '#ffb020' : t.dim, 17));
+            const guideRule = cur === 'map' || cur === 'stock' ? 'Route guidance: the map\'s own directions' : 'Route guidance: directions take over, then ' + CSRC.NAMES[cur];
+            line(guideRule + '  \u00b7  ' + clogo.routeLine(), t.dim, 16);
+            // CarPlay's map (Waze on cluster): one row, Off / On, a tap on the other asks first
+            const vt = v.kind === 'on' ? HUB.GREEN : v.kind === 'pending' || v.kind === 'busy' ? '#ffb020' : v.kind === 'conflict' || v.kind === 'error' ? (t.crit || '#ff3b30') : null;
+            card(cv, t, x0, wy, LW, wh, false);
+            const bw = 110, bx0 = x0 + LW - 2 * bw - 18;
+            rowText(cv, S, lk, x0 + (vt ? 18 : 0), wy, bx0 - x0 - 12 - (vt ? 18 : 0), wh, 'CarPlay map in the cluster (Waze on cluster)', v.value + (v.line ? ' - ' + v.line : ''), { shrink: true });
+            if (vt) cv.circle(x0 + 22, wy + wh - 20, 6, vt);
             [[false, 'Off', 'revert'], [true, 'On', 'apply']].forEach((b, i) => {
-                const bx = x0 + i * (bw + 16), on = v.on === b[0], tap = v.can === b[2];
-                if (on) {
-                    cv.roundRect(bx, top, bw, bh, u.radius, L.withAlpha(acc, 0.22));
-                    cv.strokeRoundRect(bx, top, bw, bh, u.radius, 3, acc);
-                } else card(cv, t, bx, top, bw, bh, false);
-                const c = on ? t.text : tap ? t.text : L.withAlpha(t.dim, 0.55);
-                cv.text(u.upper ? b[1].toUpperCase() : b[1], bx + bw / 2, top + bh / 2 + 12, 32, c, { font: u.txt, align: 'center', spacing: u.upper ? u.spacing : 0, literal: true });
-                if (tap) cv.target(bx, top, bw, bh, () => { ask = { cmd: b[2], at: Date.now() }; }, 'cm:' + b[1].toLowerCase(), u.radius);
+                const bx = bx0 + i * (bw + 6), on = v.on === b[0], tap = v.can === b[2], by = wy + 10, bh = wh - 20;
+                if (on) { cv.roundRect(bx, by, bw, bh, u.radius, L.withAlpha(acc, 0.22)); cv.strokeRoundRect(bx, by, bw, bh, u.radius, 2, acc); }
+                else cv.roundRect(bx, by, bw, bh, u.radius, L.withAlpha('#ffffff', 0.06));
+                cv.text(u.upper ? b[1].toUpperCase() : b[1], bx + bw / 2, by + bh / 2 + 9, 24, on || tap ? t.text : L.withAlpha(t.dim, 0.55), { font: u.txt, align: 'center', spacing: u.upper ? u.spacing : 0, literal: true });
+                if (tap) cv.target(bx, by, bw, bh, () => { ask = { cmd: b[2], at: Date.now() }; }, 'cm:' + b[1].toLowerCase(), u.radius);
             });
-            // status
-            const sy = top + bh + 16, sh = S.y + S.h - sy;
-            const tone = v.kind === 'on' ? HUB.GREEN : v.kind === 'pending' || v.kind === 'busy' ? '#ffb020' : v.kind === 'conflict' || v.kind === 'error' ? (t.crit || '#ff3b30') : t.dim;
-            cv.roundRect(x0, sy, lw, sh, u.radius, L.withAlpha('#ffffff', 0.04));
-            cv.strokeRoundRect(x0, sy, lw, sh, u.radius, 1, L.withAlpha('#ffffff', 0.12));
-            cv.circle(x0 + 30, sy + 30, 8, tone);
-            lbl(v.value, x0 + 50, sy + 39, 26, v.kind === 'none' || v.kind === 'checking' ? t.text : tone);
-            let y = sy + 70;
-            [[v.line, t.text], [v.render, t.dim], [v.note, t.dim]].forEach((l) => {
-                if (!l[0] || y > sy + sh - 8) return;
-                cv.text(fitText(cv, l[0], 19, lw - 48), x0 + 24, y, 19, l[1], { literal: true }); y += 28;
-            });
-            // what it needs
-            const ix = x0 + lw + 40, iw = S.x + S.w - ix;
-            lbl('About', ix, S.y + 20, 18, t.dim);
+            // the rules, and Refresh cluster
+            const ix = x0 + LW + 36, iw = S.x + S.w - ix;
+            lbl('Rules', ix, S.y + 20, 18, t.dim);
             const INFO = [
-                ['The logo: in the map area while G\'s Dash is open, over', t.text],
-                ['Waze\'s map too; it steps aside only for route guidance (the', t.text],
-                ['car\'s navigation, CarPlay or Android Auto) and G\'s TV.', t.text],
-                ['No route signal: it stays (turn it off for a route).', t.dim],
-                ['Needs the Cluster renderer tool from the Store.', t.dim],
+                ['Whatever you pick stays put.', t.text],
+                ['Route guidance always shows directions', t.text],
+                ['(car nav, CarPlay or Android Auto), then', t.text],
+                ['the cluster goes back to your pick.', t.text],
                 ['', null],
-                ["CarPlay's map on the instrument cluster, drawn by the", t.text],
-                ['Waze on cluster tool. G\'s Dash only switches it on or off.', t.text],
+                ["G's TV: only after you tap its Cluster", t.text],
+                ['button (parked); it gives way to route', t.text],
+                ['guidance, then back to your pick.', t.text],
                 ['', null],
-                ['Needs: Waze on cluster from the Store (source', t.dim],
-                ['robertnisipeanu/idrive-apps), and the cluster\'s Central', t.dim],
-                ['display area set to Map view.', t.dim],
-                ['A change takes effect at the next head-unit start.', t.dim],
-                ['To undo: Off here, then restart the head unit.', t.dim],
+                ['Music with nothing playing: the logo.', t.dim],
+                ["Shared with G's Music and G's TV.", t.dim],
+                ['Needs the Cluster renderer tool (Store).', t.dim],
             ];
+            const fh = ROW_H + 8, fy = bottom - fh;
             let iy = S.y + 58;
-            INFO.forEach((l) => { if (l[1]) cv.text(fitText(cv, l[0], 21, iw), ix, iy, 21, l[1], { literal: true }); iy += l[0] ? 29 : 12; });
+            INFO.forEach((l) => { if (l[1] && iy < fy - 10) cv.text(fitText(cv, l[0], 21, iw), ix, iy, 21, l[1], { literal: true }); iy += l[0] ? 29 : 12; });
+            const done = Date.now() - refreshedAt < REFRESHED_MS;
+            card(cv, t, ix, fy, iw, fh, isDown('cs:refresh') || done);
+            lbl(done ? 'Cluster refreshed' : 'Refresh cluster', ix + 22, fy + 32, u.size, t.text);
+            cv.text('Remakes every G\'s Dash cluster layer', ix + 22, fy + 58, 16, t.dim, { literal: true });
+            cv.circle(ix + iw - 40, fy + fh / 2, 16, L.withAlpha('#ffffff', 0.08));
+            cv.line(ix + iw - 46, fy + fh / 2 - 6, ix + iw - 40, fy + fh / 2, 2.5, t.text);
+            cv.line(ix + iw - 40, fy + fh / 2, ix + iw - 46, fy + fh / 2 + 6, 2.5, t.text);
+            cv.target(ix, fy, iw, fh, () => { gDown = Date.now(); downKey = 'cs:refresh'; refreshCluster(); }, 'cs:refresh', u.radius);
             if (!ask) return;
             // the confirmation, over the page: only its two buttons take taps
             if (cv.targets) cv.targets.length = mark;
@@ -913,22 +1053,6 @@ mgu.run({
         /** The logo's state as a colour (null: none): shown green, waiting amber, an error red. */
         function logoTone(t, kind) {
             return kind === 'on' ? HUB.GREEN : kind === 'wait' ? '#ffb020' : kind === 'error' ? (t.crit || '#ff3b30') : null;
-        }
-        /** "Logo in cluster when not navigating": Off / On (setting clusterLogo) and the logo's state. */
-        function logoRow(cv, S, lk, x, y, w, h) {
-            const t = S.t, u = lk.ui, acc = t.sel || t.accent, on = logoOn(), lv = clogo.view();
-            const tone = logoTone(t, lv.kind);
-            cardOf(lk)(cv, t, x, y, w, h, false);
-            const bw = 104, bx0 = x + w - 2 * bw - 12;
-            rowText(cv, S, lk, x + (tone ? 18 : 0), y, bx0 - x - 12 - (tone ? 18 : 0), h, 'Logo in cluster when not navigating', on ? lv.text : 'Off', { shrink: true });
-            if (tone && on) cv.circle(x + 22, y + h - 20, 6, tone);
-            [[false, 'Off', 'off'], [true, 'On', 'on']].forEach((b, i) => {
-                const bx = bx0 + i * (bw + 6), sel = on === b[0], by = y + 10, bh = h - 20;
-                if (sel) { cv.roundRect(bx, by, bw, bh, u.radius, L.withAlpha(acc, 0.22)); cv.strokeRoundRect(bx, by, bw, bh, u.radius, 2, acc); }
-                else cv.roundRect(bx, by, bw, bh, u.radius, L.withAlpha('#ffffff', 0.06));
-                cv.text(u.upper ? b[1].toUpperCase() : b[1], bx + bw / 2, by + bh / 2 + 9, 24, sel ? t.text : t.dim, { font: u.txt, align: 'center', spacing: u.upper ? u.spacing : 0, literal: true });
-                if (!sel) cv.target(bx, by, bw, bh, () => settings.set('clusterLogo', b[2]), 'cl:' + b[2], u.radius);
-            });
         }
         function fitText(cv, s, size, w, o) {
             s = String(s);
@@ -964,7 +1088,7 @@ mgu.run({
             if (!cv.own) page = 0;
             autoStep(S);
             const P = Object.assign({}, S, { y: SET_Y, h: reach - SET_Y - 6 });
-            // the patch service's socket: open only while the Cluster logo page is on screen
+            // the patch service's socket: open only while the Cluster source page is on screen
             if (page === 4 && visible()) cmap.open(); else { cmap.close(); ask = null; }
             if (page === 1) optionsPage(cv, P, lk);
             else if (page === 2) spotifyPage(cv, P, lk);

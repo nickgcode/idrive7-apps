@@ -295,6 +295,7 @@ class ClusterLogo {
     update(s) {
         const on = !!(s && s.on);
         this.enabled = !(s && s.enabled === false);
+        this.idleText = (s && typeof s.idleText === 'string') ? s.idleText : '';   // the line while not wanted (0.8.3: the Cluster source pick)
         this.pixel = !!(s && s.pixel);
         this.parked = !!(s && s.parked);
         if (!on) { if (this.want || this.cr) this._off(); this.want = false; return; }
@@ -559,9 +560,9 @@ class ClusterLogo {
 
     /** The Options line, short enough for its row: { kind: 'on' | 'wait' | 'off' | 'none' | 'error', text }. */
     view() {
-        if (!this.enabled) return { kind: 'off', text: 'Off' };
+        if (!this.enabled) return { kind: 'off', text: /^Off - /.test(this.idleText || '') ? this.idleText : 'Off' };   // 0.8.3: "Off - Map picked"
         if (this.err) return { kind: 'none', text: SHORT_ERR[this.err.error] || this.err.text };
-        if (!this.want) return { kind: 'off', text: 'On - while G\'s Dash is open' };
+        if (!this.want) return { kind: 'off', text: this.idleText || 'On - while G\'s Dash is open' };
         if (!this.cr || !this.ready || !this.polled) return { kind: 'wait', text: 'Connecting to renderer' };
         if (this.layerState === 'error') return { kind: 'error', text: 'Renderer refused the logo' };
         if (this.guiding) {

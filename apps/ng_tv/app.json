@@ -1,8 +1,9 @@
 {
   "id": "ng_tv",
   "title": "G's TV",
-  "description": "EXPERIMENTAL. Watch video pictures while parked. A home screen of sources: Spelunkr (spelunkr.tv's channels of programmes on the Internet Archive, no DRM, no sign-in) with CH up / CH down, swipe up / down to change channel, a channel banner, a 2-hour guide with category filters and a fullscreen picture; and your own sources: direct links to one MP4 file (H.264 video) each, sent from your phone with a QR code or a 6-digit code (end-to-end encrypted), checked by the car before they are saved, resumed where you left off. Instant resume: back in P the picture continues where it stopped (the last picture stays dimmed while driving), and opening the app goes back to what you watched; for Spelunkr choose resume where I stopped or jump to what's on now. Hold a source to rename it, send a new link or remove it. Web pages and players are refused. Decoded in the app (WebAssembly H.264). Video only, no sound yet. Parked only: the picture shows only while the speed is known and at most 3 km/h and the selector is in P, otherwise 'Video available when parked'. HUD and Cluster buttons on the picture's controls: one tap puts the video in the head-up display or the instrument cluster (parked only, one at a time, off by default). The cluster picture plays in the centre map area between the dials. Both need the separate Cluster renderer tool from the Store. Needs mgu-uplink internet",
-  "version": "0.4.3",
+  "description": "EXPERIMENTAL. Watch video pictures while parked. A home screen of sources: Spelunkr (spelunkr.tv's channels of programmes on the Internet Archive, no DRM, no sign-in) with CH up / CH down, swipe up / down to change channel, a channel banner, a 2-hour guide with category filters and a fullscreen picture; and your own sources: direct links to one MP4 file (H.264 video) each, sent from your phone with a QR code or a 6-digit code (end-to-end encrypted), checked by the car before they are saved, resumed where you left off. Instant resume: back in P the picture continues where it stopped (the last picture stays dimmed while driving), and opening the app goes back to what you watched; for Spelunkr choose resume where I stopped or jump to what's on now. Hold a source to rename it, send a new link or remove it. Web pages and players are refused. Decoded in the app (WebAssembly H.264). Video only, no sound yet. Parked only: the picture shows only while the speed is known and at most 3 km/h and the selector is in P, otherwise 'Video available when parked'. HUD and Cluster buttons on the picture's controls: one tap puts the video in the head-up display or the instrument cluster (parked only, one at a time, off by default). The cluster picture plays in the centre map area between the dials; 0.4.4: it gives way to route guidance (the car's navigation, CarPlay or Android Auto: the directions show in the cluster, the video keeps playing on this screen) and afterwards the cluster goes back to G's Dash's Cluster source pick. Both need the separate Cluster renderer tool from the Store. Needs mgu-uplink internet",
+  "version": "0.4.4",
+  "share": ["ng_gsdash/cluster_source.js"],
   "vendor": "ng",
   "loggingId": "OAN3",
   "internet": true,
@@ -13,6 +14,20 @@
     "de.bmw.infrastructure.VehicleInformation": {
       "statusGearboxDrive": "s",
       "DataPowerTrain2": "s"
+    },
+    "de.bmw.infotainment.navigation.navigationstatus.NavigationStatus": {
+      "_optional": "the cluster picture's route guidance check (0.4.4): guidingState (ACTIVE: the picture leaves the cluster for the directions, the screen keeps playing); without it the phone's signals decide",
+      "guidingState": "rs"
+    },
+    "de.bmw.infotainment.a4a.carplay.CarPlayManager": {
+      "_optional": "the cluster picture's CarPlay route guidance check (Waze or Maps with a route): projectedGuidanceActive",
+      "_instances": "CarPlayManagerInst1",
+      "projectedGuidanceActive": "rs"
+    },
+    "de.bmw.infotainment.sdi.aap.androidautoprojectedmanager.AndroidAutoProjectedManager": {
+      "_optional": "the cluster picture's Android Auto route guidance check: projectedGuidanceActive",
+      "_instances": "AndroidAutoProjectedManagerInst1",
+      "projectedGuidanceActive": "rs"
     }
   },
   "config": {

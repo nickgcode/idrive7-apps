@@ -1,8 +1,9 @@
 {
   "id": "ng_spotify",
   "title": "G's Music",
-  "description": "Full-screen Spotify player for the touch screen: album art, synced lyrics (LRCLIB) or a visualizer, a progress bar you tap or drag to seek, and big touch controls (previous, play/pause, next, shuffle, repeat, like) over the Spotify Web API; sign in by scanning a QR code with your phone; and a home-screen widget (album art, title and artist of what plays; the track as text on the small size); while a track plays, its synced lyrics or a visualizer in the instrument cluster's centre map area (needs the Cluster renderer from the Store; hidden while G's TV plays there or a route is guided); needs Spotify Premium and mgu-uplink internet",
-  "version": "0.6.0",
+  "description": "Full-screen Spotify player for the touch screen: album art, synced lyrics (LRCLIB) or a visualizer, a progress bar you tap or drag to seek, and big touch controls (previous, play/pause, next, shuffle, repeat, like) over the Spotify Web API; sign in by scanning a QR code with your phone; and a home-screen widget (album art, title and artist of what plays; the track as text on the small size); while a track plays, its synced lyrics or a visualizer in the instrument cluster's centre map area (needs the Cluster renderer from the Store; hidden while G's TV plays there or a route is guided; 0.6.1: follows G's Dash's Cluster source pick, showing only for Auto and Music); needs Spotify Premium and mgu-uplink internet",
+  "version": "0.6.1",
+  "share": ["ng_gsdash/cluster_source.js"],
   "vendor": "ng",
   "loggingId": "OAN2",
   "internet": true,

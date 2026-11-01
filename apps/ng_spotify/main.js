@@ -9,6 +9,10 @@
  * visualizer in the instrument cluster's centre map area, through the Cluster renderer tool (over
  * Waze's map and G's Dash's logo, under G's TV; hidden while G's TV plays there or a route is guided;
  * gone after 30 s of pause). Spotify is read every CLUSTER_POLL_MS for it while this screen is not up.
+ * 0.6.1: it follows G's Dash's Cluster source pick (cluster_source.js, shared in from G's Dash by the
+ * build): it draws only for Auto and Music (its own Cluster setting still decides; Off is respected),
+ * the pick read from /dev/shm/ng-cluster/source.json, checked, the last good one kept in settings.json,
+ * else Auto. Its own Cluster setting goes to /dev/shm/ng-cluster-music/state.json for G's Dash's page.
  *
  * Source: the Spotify Web API (spotify.js) over mgu-uplink (mgu-store), so it controls whatever device
  * your account plays on - the phone that is connected to the car included. Player commands need
@@ -44,6 +48,7 @@ const qrcodegen = require('./qrcodegen');
 const LyricsLib = require('./lyrics');
 const { Canvas } = require('./kit/canvas');
 const MC = require('./music_cluster');
+const CSRC = require('./cluster_source');
 const VIZ = require('./viz');
 const zlib = require('zlib');
 const WLOGO = require('./widget_logo');
@@ -332,18 +337,27 @@ mgu.run({
         }
         // the cluster's picture (music_cluster.js): lyrics or the visualizer while a track plays
         const mc = new MC.MusicCluster({ log, app: 'ng_spotify', Canvas });
-        const clusterOn = () => settings.get('cluster') === 'lyrics' || settings.get('cluster') === 'visualizer';
+        // G's Dash's Cluster source pick (0.6.1): read every tick (only re-parsed when the file changed)
+        const srcReader = new CSRC.SourceReader({ settings, log });
+        const pick = () => srcReader.get().source;
+        const clusterOn = () => (settings.get('cluster') === 'lyrics' || settings.get('cluster') === 'visualizer') && CSRC.musicAllowed(pick());
+        // its own Cluster setting, for G's Dash's Cluster source page (its warning when Music is picked but this is Off)
+        const shareSetting = () => {
+            const v = settings.get('cluster'), r = CSRC.publishMusic(v === 'lyrics' || v === 'visualizer' ? v : 'off');
+            if (r.error) log.warn('cluster source: ' + r.text);
+        };
+        shareSetting();
         const clusterTick = () => {
             const ok = status === 'ok' && !!pb;
             const t = ok && pb.title && !pb.ad ? { uri: pb.uri, title: pb.title, artist: pb.artist, kind: pb.kind, duration: pb.duration, ad: pb.ad } : null;
             const want = clusterOn() && t && settings.get('cluster') === 'lyrics' && pb.kind !== 'episode';
-            mc.update({ setting: settings.get('cluster'), ok, track: t, playing: !!(pb && pb.playing), pos: position(), posFn: () => position(),
+            mc.update({ setting: settings.get('cluster'), source: pick(), ok, track: t, playing: !!(pb && pb.playing), pos: position(), posFn: () => position(),
                 lyrics: want ? lyr.get({ uri: pb.uri, title: pb.title, artist: pb.artist, artist1: pb.artist1, album: pb.album, duration: pb.duration }) : null,
                 palette: artPal, vizPalette: stageColours(ctx.theme()) });
         };
         setInterval(() => { try { clusterTick(); } catch (e) { log.warn('music cluster: ' + e.message); } }, 250);
         process.once('exit', () => mc.close());
-        settings.onChange((k) => { if (k === 'cluster') { nextPoll = 0; clusterTick(); } });
+        settings.onChange((k) => { if (k === 'cluster') { shareSetting(); nextPoll = 0; clusterTick(); } });
         // route guidance hides the cluster's picture, as G's Dash's logo (app.json "_optional" signals)
         const GUIDE = [
             ['de.bmw.infotainment.navigation.navigationstatus.NavigationStatus', '1', 'guidingState', 'nav'],

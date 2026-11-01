@@ -55,6 +55,11 @@
  * its Full / Left / Right are gone, and so is the settings page's Cluster group. Play in cluster is the
  * Cluster button alone (one tap, as before), its on / off kept in settings.json under 'cluster' as the
  * HUD's is; a saved Cluster screen is deleted on start (app.json retiredSettings).
+ * 0.4.4, route guidance first: while the car's navigation, CarPlay or Android Auto guides a route (the
+ * same signals and debounce as G's Dash's logo: on after 1 s, off after 3 s; app.json "_optional"), the
+ * cluster picture is dropped so the directions show there; the video keeps playing on this screen, and
+ * the cluster picture comes back when the route ends. The status line names G's Dash's Cluster source
+ * pick ("after TV: Logo", cluster_source.js shared in from G's Dash), what the cluster goes back to.
  * Every safety rule unchanged: the picture on the HUD and the cluster only through the parked gate (speed known and at
  * most 3 km/h, P, 2 s settled; dropped on the gear / speed signal itself), off while moving, one output
  * at a time, never the alert class, never 7702 / 7703. Without the Cluster renderer tool the button says
@@ -75,6 +80,7 @@ const { Lineup, config, clean } = require('./tv_channel');
 const Player = require('./tv_player');
 const { ShmOut, ImageOut } = require('./tv_out');
 const { ClusterOut, loadClient } = require('./tv_cluster');
+const CSRC = require('./cluster_source');
 const Src = require('./tv_sources');
 const { Handoff } = require('./tv_handoff');
 const qrcodegen = require('./qrcodegen');
@@ -189,6 +195,10 @@ mgu.run({
         const parked = parkedWatch.watch(tapped, log);
         const cluster = new ClusterOut({ log, app: ctx.spec.id || 'ng_tv' });              // the map area
         const hud = new ClusterOut({ log, app: ctx.spec.id || 'ng_tv', target: 'hud' });
+        // route guidance (0.4.4): the cluster picture gives way to the directions; the screen keeps playing
+        const guide = new CSRC.Guidance({ log, tag: 'tv cluster guidance' });
+        const srcReader = new CSRC.SourceReader({ settings, log });
+        let guided = false;
         // Cluster and HUD keep their choice (one at a time: should both have been saved on, Cluster wins)
         if (settings.get('hud') && settings.get('cluster')) settings.set('hud', false);
 
@@ -240,7 +250,7 @@ mgu.run({
                 const toCluster = !!settings.get('cluster'), toHud = !!settings.get('hud');
                 if (toCluster || toHud) {
                     if (gate().ok) {                           // the gate again, now, before each cluster / HUD picture
-                        if (toCluster) cluster.write(f);
+                        if (toCluster && !guided) cluster.write(f);
                         if (toHud) hud.write(f);
                     } else gateStep();                         // closes the gate and takes the picture off
                 }
@@ -591,8 +601,28 @@ mgu.run({
         applyCluster();
         hud.enable(!!settings.get('hud'));                    // 0.4.2: kept across restarts, as Cluster's
         const clusterText = (s) => (/^Cluster /.test(s.text) ? s.text : 'Cluster: ' + s.text);
+        /** Route guidance (0.4.4), debounced: on -> the cluster picture dropped (the screen plays on), off -> back. */
+        function guideStep() {
+            const g = guide.tick();
+            if (g === guided) return;
+            guided = g;
+            if (g) { cluster.stop(); log.info('route guidance: the cluster picture leaves for the directions (the screen keeps playing)'); }
+            else log.info('route guidance ended: the cluster picture can come back');
+            labels();
+        }
+        if (ctx.signals && typeof ctx.signals.watch === 'function') CSRC.GUIDE_SIGNALS.forEach((g) => {
+            const h = {};
+            h[g[2]] = (v) => { guide.set(g[3], v); guideStep(); };
+            try {
+                ctx.signals.watch(g[0], g[1], h, log, { pollMs: 10000 })
+                    .then((r) => log.info('guidance ' + g[3] + ': ' + (r && r.error ? 'unavailable (' + r.error + ')' : 'watched')), (e) => log.warn('guidance ' + g[3] + ': ' + e));
+            } catch (e) { log.warn('guidance ' + g[3] + ': ' + e.message); }
+        });
+        /** After the picture: G's Dash's Cluster source pick, the last good one, else Auto. */
+        const afterTv = () => CSRC.NAMES[srcReader.get().source] || 'Auto';
         function outStatus(playing) {
-            if (settings.get('cluster')) { const cs = cluster.status(gateOpen, playing); return { level: cs.level, text: clusterText(cs) }; }
+            if (settings.get('cluster') && guided) return { level: 'info', text: 'Cluster: directions (route guidance) - the picture stays on this screen, back after the route' };
+            if (settings.get('cluster')) { const cs = cluster.status(gateOpen, playing); return { level: cs.level, text: clusterText(cs) + ' - after TV: ' + afterTv() }; }
             if (settings.get('hud')) { const hs = hud.status(gateOpen, playing); return { level: hs.level, text: 'HUD: ' + hs.text }; }
             return null;
         }
@@ -670,6 +700,7 @@ mgu.run({
         let clusterShown = '';
         setInterval(() => {
             gateStep();
+            guideStep();
             // the warm state: at most WARM_MS paused, not while memory is tight, at most WARM_BYTES of samples
             if (player.v && player.paused && warmAt) {
                 if (Date.now() - warmAt > WARM_MS) dropWarm(Math.round(WARM_MS / 60000) + ' min paused');
@@ -1419,7 +1450,7 @@ mgu.run({
                 ['Video', inf.w ? 'H.264 ' + (inf.profile === 100 ? 'High' : inf.profile === 77 ? 'Main' : 'profile ' + inf.profile) + ', ' + inf.w + 'x' + inf.h + ', ' + inf.srcFps.toFixed(2) + ' fps' : '-'],
                 ['Decoder', inf.decMs ? 'WebAssembly, ' + inf.decMs.toFixed(1) + ' ms a picture' + (inf.light ? ' (light)' : '') : 'WebAssembly (FFmpeg H.264)'],
                 ['Output', pathName()],
-                ['Cluster', settings.get('cluster') ? cluster.status(gateOpen, gateOpen && player.state === 'playing').text : 'Off (Cluster button)'],
+                ['Cluster', settings.get('cluster') ? (guided ? 'Directions (route guidance) - back after the route' : cluster.status(gateOpen, gateOpen && player.state === 'playing').text + ' - after TV: ' + afterTv()) : 'Off (Cluster button)'],
                 ['HUD', settings.get('hud') ? hud.status(gateOpen, gateOpen && player.state === 'playing').text : 'Off (HUD button)'],
                 ['Sound', 'None yet: no verified way for an app to play audio'],
                 ['Sources', 'Spelunkr: the Internet Archive, no DRM. Mine: ' + store.list().length + ' of ' + Src.MAX_SOURCES],

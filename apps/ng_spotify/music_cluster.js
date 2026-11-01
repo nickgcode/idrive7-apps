@@ -15,7 +15,8 @@
  * z 60/61: over Waze's map (z 0) and G's Dash's logo (z 50), under G's TV (z 100). Like the logo,
  * the layers hide while G's TV draws on the map and while route guidance runs (debounced
  * GUIDE_ON_MS / GUIDE_OFF_MS), and come back HOLD_MS after G's TV stops.
- * Both go (dropped, the connection closed) when: the setting is Off, no track, paused for more than
+ * Both go (dropped, the connection closed) when: the setting is Off, G's Dash's Cluster source pick is
+ * not Auto or Music (0.6.1, s.source), no track, paused for more than
  * PAUSE_DROP_MS, the app closes, or the renderer keeps failing them (ERR_RETRIES).
  *
  * The client is the tool's own, loaded at run time from /var/opt/cluster-render/current (root-owned
@@ -312,7 +313,7 @@ class MusicCluster {
         this.err = null; this.errAt = -1e15;
         this.guide = { nav: null, carplay: null, aa: null };
         this.rawGuide = false; this.rawSince = this.now(); this.guiding = false;
-        this.s = null; this.want = false; this.reason = 'off';
+        this.s = null; this.want = false; this.reason = 'off'; this.source = 'auto';
         this.pausedAt = 0; this.gaveUp = '';
         this.stats = { layers: 0, sends: 0, bytes: 0, textBytes: 0, barsBytes: 0, drops: 0, connects: 0 };
         this.clk = VIZ.clock();                      // the visualizer's clock (viz.js), as main.js's
@@ -331,7 +332,8 @@ class MusicCluster {
      * What G's Music has, from its 250 ms tick (idempotent): s = { setting 'off' | 'lyrics' |
      * 'visualizer', ok (signed in, the player answered), track: { uri, title, artist, kind, duration,
      * ad } | null, playing, pos (ms), lyrics: lyrics.js's entry for the track | null, palette (the
-     * artwork's), vizPalette (the screen's visualizer colours) }.
+     * artwork's), vizPalette (the screen's visualizer colours), source (0.6.1: G's Dash's Cluster source
+     * pick, 'auto' when not given) }.
      */
     update(s) {
         const now = this.now();
@@ -341,13 +343,17 @@ class MusicCluster {
         if (t && this.s.playing) this.pausedAt = 0;
         else if (t && !this.pausedAt) this.pausedAt = now;
         let why = '';
+        // the Cluster source pick (0.6.1, G's Dash's cluster_source.js): only Auto and Music let it draw
+        const source = typeof this.s.source === 'string' ? this.s.source : 'auto';
+        this.source = source;
         if (setting === 'off') why = 'off';
+        else if (source !== 'auto' && source !== 'music') why = 'source';
         else if (!this.s.ok) why = 'nospotify';
         else if (!t || !t.title || t.ad) why = 'notrack';
         else if (!this.s.playing && now - this.pausedAt > PAUSE_DROP_MS) why = 'paused';
         else if (this.gaveUp && this.gaveUp === t.uri) why = 'failed';
         if (this.gaveUp && t && this.gaveUp !== t.uri) this.gaveUp = '';
-        if (why !== this.reason && why) this.log.info('music cluster: ' + ({ off: 'off', nospotify: 'no Spotify', notrack: 'no track', paused: 'paused ' + (PAUSE_DROP_MS / 1000) + ' s - dropped', failed: 'given up for this track' })[why]);
+        if (why !== this.reason && why) this.log.info('music cluster: ' + ({ off: 'off', nospotify: 'no Spotify', notrack: 'no track', paused: 'paused ' + (PAUSE_DROP_MS / 1000) + ' s - dropped', failed: 'given up for this track', source: 'G\'s Dash picked ' + source + ' - dropped' })[why]);
         this.reason = why;
         if (why) { if (this.cr) this._off(); this.want = false; return; }
         this.want = true;
@@ -570,7 +576,9 @@ class MusicCluster {
     /** The settings page's line: { kind: 'on' | 'wait' | 'off' | 'none' | 'error', text }. */
     view() {
         const r = this.reason;
-        if (r === 'off') return { kind: 'off', text: 'Off' };
+        const PICK = { auto: 'Auto', logo: 'Logo', music: 'Music', map: 'Map', stock: 'Stock' };
+        if (r === 'off') return { kind: 'off', text: this.source === 'music' ? 'Off - G\'s Dash picked Music: turn on here' : 'Off' };
+        if (r === 'source') return { kind: 'off', text: 'Set in G\'s Dash: ' + (PICK[this.source] || this.source) };
         if (this.err) return { kind: 'none', text: ({ missing: 'Needs Cluster renderer (Store)', noclient: 'Update Cluster renderer', untrusted: 'Renderer not trusted', load: 'Renderer failed to load' })[this.err.error] || this.err.text };
         if (r === 'nospotify' || r === 'notrack') return { kind: 'wait', text: 'Shows while a track plays' };
         if (r === 'paused') return { kind: 'wait', text: 'Paused - comes back on Play' };
