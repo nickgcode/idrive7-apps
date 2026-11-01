@@ -14,6 +14,13 @@ You may rebuild it with a modified FFmpeg and replace h264.wasm in the app.
 
 FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project.
 
+Play in cluster (tv_cluster.js) uses the Cluster renderer tool's Node client,
+cluster_render_client.js (cluster-render, https://github.com/robertnisipeanu/idrive-apps),
+licensed under the Mozilla Public License 2.0 (https://mozilla.org/MPL/2.0/). It is NOT
+included in G's TV: the app loads it at run time from where the tool installs it on the
+car (/var/opt/cluster-render/current/). tv_cluster.js is G's TV's own code (MIT), written
+from the tool's protocol description; it contains none of the tool's code.
+
 ------------------------------------------------------------------------
                   GNU LESSER GENERAL PUBLIC LICENSE
                        Version 2.1, February 1999

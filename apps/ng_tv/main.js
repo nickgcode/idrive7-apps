@@ -33,6 +33,7 @@ const { Net } = require('./tv_net');
 const { Channel, config } = require('./tv_channel');
 const Player = require('./tv_player');
 const { ShmOut, ImageOut } = require('./tv_out');
+const { ClusterOut } = require('./tv_cluster');
 
 const NAME = "G's TV";
 let VERSION = '';
@@ -41,6 +42,7 @@ const VIDEO_ID = 1;                 // the renderer's video id, and the pixel im
 const DOCK_H = 116, GB_W = 116, HEAD_H = 72;
 const MAX_KMH = parkedWatch.MAX_KMH;    // 3
 const RESUME_MS = 2000;             // parked this long before the picture comes back
+const ASK_MS = 5000;                // Play in cluster: the second tap that confirms, within this
 const RETUNE_MS = 60000;            // blanked longer than this: back to what the channel plays now
 const THEME_NAME = { m_red: 'M Red', m_tricolour: 'M Tricolour', ice: 'Ice White', amber: 'Night Amber' };
 const MODE_NAME = { auto: 'Auto', full: 'Every picture', light: 'Light (about 10 fps)' };
@@ -69,6 +71,28 @@ function wrap(cv, s, size, w, max, opts) {
     if (max && lines.length > max) { const rest = lines.slice(max - 1).join(' '); lines.length = max - 1; lines.push(fit(cv, rest, size, w, opts)); }
     return lines;
 }
+/**
+ * ctx for the car's watches with every signal handler wrapped: after the handler has stored the value,
+ * after() runs (the gate re-check). The watches and their values are unchanged.
+ */
+function tapSignals(ctx, after) {
+    if (!ctx.signals || typeof ctx.signals.watch !== 'function') return ctx;
+    const sig = Object.create(ctx.signals);
+    sig.watch = function (iface, instance, handlers, log, opts) {
+        const wrapped = {};
+        Object.keys(handlers || {}).forEach((k) => {
+            wrapped[k] = function () {
+                const r = handlers[k].apply(this, arguments);
+                try { after(); } catch (e) { if (log) log.warn('gate re-check: ' + e.message); }
+                return r;
+            };
+        });
+        return ctx.signals.watch(iface, instance, wrapped, log, opts);
+    };
+    const c = Object.create(ctx);
+    c.signals = sig;
+    return c;
+}
 function clock(s) {
     if (!(s >= 0)) return '-:--';
     s = Math.floor(s);
@@ -84,8 +108,13 @@ mgu.run({
         const channel = new Channel(net, cfg, log);
         const shm = new ShmOut(ctx.spec.id || 'ng_tv', log);
         const img = new ImageOut(VIDEO_ID);
-        const car = new Car(ctx, ['gear']);
-        const parked = parkedWatch.watch(ctx, log);
+        // the gear and speed watches also re-check the gate the moment a value arrives (not only every
+        // 250 ms), so leaving P takes the cluster picture off within one signal delivery; gate() is unchanged
+        let onSignal = () => {};
+        const tapped = tapSignals(ctx, () => onSignal());
+        const car = new Car(tapped, ['gear']);
+        const parked = parkedWatch.watch(tapped, log);
+        const cluster = new ClusterOut({ log, app: ctx.spec.id || 'ng_tv' });
 
         let page = 'main';
         let toast = null;
@@ -101,20 +130,33 @@ mgu.run({
         const gpuOn = () => !!(ctx.display && ctx.display.gpu && ctx.display.active && ctx.display.active('MAIN'));
         const videoPath = () => { const g = gpuOn() ? ctx.display.gpu : null; return !!(g && g.native && g.info && g.info.video); };
         const pathName = () => (videoPath() ? 'GPU video (/dev/shm)' : gpuOn() ? 'GPU image (about 10 fps)' : 'Software image (2 fps)');
-        const capFps = () => {
+        const screenFps = () => {
             if (!videoPath()) return gpuOn() ? 10 : 2;
             return Math.max(5, Number(settings.get('maxFps')) || 30);
         };
+        // Play in cluster: pictures handed over at least 15 a second for the cluster (it keeps to its own
+        // 15 or fewer); the centre screen's image paths still get only their own rate
+        const capFps = () => (settings.get('cluster') && gateOpen ? Math.max(screenFps(), 15) : screenFps());
+        let imgAt = 0;
         const player = new Player({
             net, log, dir: __dirname,
             cap: capFps,
             mode: () => settings.get('mode') || 'auto',
             sink: (f) => {
                 if (!gateOpen) return;                         // never a picture while not parked
-                if (videoPath()) shm.write(f); else img.write(f);
+                if (videoPath()) shm.write(f);
+                else { const now = Date.now(); if (now - imgAt >= 1000 / screenFps() - 5) { imgAt = now; img.write(f); } }
+                if (settings.get('cluster')) {
+                    if (gate().ok) cluster.write(f);           // the gate again, now, before each cluster picture
+                    else gateStep();                           // closes the gate and takes the picture off
+                }
             },
         });
-        player.on('state', () => labels());
+        player.on('state', () => {
+            // no pictures coming: off the cluster now rather than after the 1 s stall
+            if (/^(idle|tuning|paused|offline|error)$/.test(player.state)) cluster.stop();
+            labels();
+        });
 
         /* ----- the channel ----- */
         function srcAt(i, offset) {
@@ -159,6 +201,7 @@ mgu.run({
             return { ok: true, why: 'Parked' };
         }
         let lastGate = gate();
+        onSignal = () => gateStep();
         function gateStep() {
             const g = lastGate = gate(), now = Date.now();
             if (!g.ok) {
@@ -179,6 +222,7 @@ mgu.run({
             }
         }
         function blank() {
+            cluster.stop();                                    // first: the cluster picture goes at once
             img.clear();
             const gpu = ctx.display && ctx.display.gpu;
             if (gpu && gpu.dropVideo) gpu.dropVideo(VIDEO_ID);
@@ -209,17 +253,45 @@ mgu.run({
         ui.onClick('BTN_LIVE', goLive);
         ui.onClick('BTN_MORE', () => ui.open('MORE'));
 
+        /* ----- Play in cluster (setting 'cluster', default off) ----- */
+        let clusterAsk = 0;                                    // first tap asks, a second within ASK_MS turns it on
+        function toggleCluster() {
+            if (settings.get('cluster')) { clusterAsk = 0; settings.set('cluster', false); say('Cluster: off'); return; }
+            if (Date.now() - clusterAsk > ASK_MS) {
+                clusterAsk = Date.now();
+                say('Tap Cluster again to play in the cluster\'s map area (parked only)', ASK_MS);
+                return;
+            }
+            clusterAsk = 0; toast = null;
+            settings.set('cluster', true);
+        }
+        settings.onChange((key, value) => {
+            if (key !== 'cluster') return;
+            cluster.enable(!!value);
+            log.info('cluster: ' + (value ? 'on' : 'off'));
+            labels();
+        });
+        cluster.enable(!!settings.get('cluster'));
+        const clusterText = (s) => (/^Cluster /.test(s.text) ? s.text : 'Cluster: ' + s.text);
+        const clusterLine = () => clusterText(cluster.status(gateOpen, gateOpen && want && !player.paused && player.state === 'playing'));
+
         ui.onVisible((name, on) => {
             if (name !== 'MAIN' && name !== 'MORE') return;
             if (ui.isVisible('MAIN') || ui.isVisible('MORE')) { gateStep(); if (gateOpen && want) resumeOrLive(); }
             else { lastDraw = 0; player.pause(); gatedAt = gatedAt || Date.now(); blank(); }
         });
-        const cleanup = () => { try { shm.remove(); } catch (e) { /* gone */ } };
+        const cleanup = () => {
+            try { cluster.close(); } catch (e) { /* gone */ }
+            try { shm.remove(); } catch (e) { /* gone */ }
+        };
         process.on('exit', cleanup);
         process.once('SIGTERM', () => { cleanup(); process.exit(0); });
 
+        let clusterShown = '';
         setInterval(() => {
             gateStep();
+            const cl = settings.get('cluster') ? clusterLine() : '';
+            if (cl !== clusterShown) { clusterShown = cl; labels(); }
             if (chState !== 'ok' && chState !== 'loading' && Date.now() >= chRetry && visible() && gateOpen && want) live();
         }, 250);
 
@@ -237,7 +309,7 @@ mgu.run({
         }
         function labels() {
             label('BTN_PLAY', want && !player.paused ? 'Pause' : 'Play');
-            label('MORE_INFO', statusLine() + ' | video only, no sound yet');
+            label('MORE_INFO', statusLine() + ' | video only, no sound yet' + (settings.get('cluster') ? ' | ' + clusterLine() : ''));
         }
         labels();
 
@@ -332,14 +404,21 @@ mgu.run({
             const bad = !g.ok || player.state === 'error' || chState === 'error' || chState === 'offline' || player.state === 'offline';
             cv.circle(X + 9, y - 8, 8, !g.ok ? t.dim : bad ? t.crit : player.state === 'playing' ? '#2fd27a' : on);
             wrap(cv, st, 24, W - 28, 2).forEach((s) => { cv.text(s, X + 28, y, 24, t.text, { literal: true }); y += 32; });
+            if (settings.get('cluster')) {
+                const cs = cluster.status(gateOpen, playingPic && player.state === 'playing');
+                const col = cs.level === 'ok' ? '#2fd27a' : cs.level === 'bad' ? t.crit : cs.level === 'warn' ? '#ffcc33' : t.dim;
+                cv.roundRect(X + 3, y - 14, 12, 12, 3, col);
+                cv.text(fit(cv, clusterText(cs), 20, W - 28), X + 28, y, 20, cs.level === 'bad' ? t.crit : t.text, { literal: true });
+                y += 30;
+            }
             if (gateOpen && inf.w) {
                 const tech = inf.w + 'x' + inf.h + '  ' + (inf.fps ? inf.fps.toFixed(0) + ' fps shown' : '') + (inf.decMs ? '  decode ' + inf.decMs.toFixed(1) + ' ms' : '') + (inf.light ? '  light' : '');
                 cv.text(fit(cv, tech, 20, W), X, y + 2, 20, t.dim, { literal: true });
                 if (inf.end > inf.start) cv.text(clock(inf.pos - (channel.items && cur ? channel.items[cur.index].inS : 0)) + ' / ' + clock(inf.end - (channel.items && cur ? channel.items[cur.index].inS : 0)), X, y + 30, 20, t.dim, { font: 'num', literal: true });
             }
 
-            // dock: play/pause, live, the G
-            const DY = A.bottom - DOCK_H, gx = cv.own ? A.right - GB_W : A.right, bw = (gx - X - (cv.own ? 16 : 0) - 16) / 2;
+            // dock: play/pause, live, cluster, the G
+            const DY = A.bottom - DOCK_H, gx = cv.own ? A.right - GB_W : A.right, bw = (gx - X - (cv.own ? 16 : 0) - 32) / 3;
             const isPlay = want && !player.paused && gateOpen, gc = gateOpen ? t.text : t.dim;
             action(cv, t, 'play', X, DY, bw, DOCK_H, isPlay ? 'Pause' : 'Play', togglePlay, (px, py) => {
                 if (isPlay) { cv.fillRect(px - 15, py - 18, 11, 36, gc); cv.fillRect(px + 4, py - 18, 11, 36, gc); }
@@ -349,6 +428,16 @@ mgu.run({
                 cv.circle(px, py, 10, gateOpen ? t.crit : t.dim);
                 cv.strokeRoundRect(px - 21, py - 21, 42, 42, 21, 3, gc);
             });
+            const clOn = !!settings.get('cluster'), asking = Date.now() - clusterAsk < ASK_MS;
+            const cbx = X + 2 * (bw + 16);
+            action(cv, t, 'cluster', cbx, DY, bw, DOCK_H, asking ? 'Tap again' : clOn ? 'Cluster on' : 'Cluster', toggleCluster, (px, py) => {
+                // the cluster's outline: two dials and the area between them
+                const c = clOn ? (t.sel || t.accent) : asking ? '#ffcc33' : t.text;
+                cv.strokeRoundRect(px - 30, py - 15, 60, 30, 15, 3, c);
+                cv.circle(px - 16, py, 6, c); cv.circle(px + 16, py, 6, c);
+                if (clOn) cv.fillRect(px - 6, py - 7, 12, 14, c);
+            });
+            if (clOn) { cv.roundRect(cbx + 1, DY + 1, bw - 2, DOCK_H - 2, 14, G.withAlpha(t.sel || t.accent, 0.12)); cv.strokeRoundRect(cbx, DY, bw, DOCK_H, 14, 2, t.sel || t.accent); }
             if (cv.own) gButton(cv, t, { x: gx, y: DY, w: GB_W, h: DOCK_H }, false, 'g', () => press('g', () => { page = 'settings'; }));
         }
 
@@ -369,6 +458,7 @@ mgu.run({
             ['maxFps', 'At most (GPU video)', (v) => v + ' fps'],
             ['theme', 'Colours', (v) => THEME_NAME[v] || v],
             ['renderer', 'Renderer', (v) => (v === 'software' ? 'Software (fallback)' : 'GPU')],
+            ['cluster', 'Play in cluster (parked)', (v) => (v ? 'On' : 'Off')],
         ];
         function drawSettings(cv, t, A) {
             const on = t.accent2 || t.accent, hy = A.y, cyH = hy + HEAD_H / 2, bw = 220;
@@ -391,6 +481,7 @@ mgu.run({
                 ['Video', inf.w ? 'H.264 ' + (inf.profile === 100 ? 'High' : inf.profile === 77 ? 'Main' : 'profile ' + inf.profile) + ', ' + inf.w + 'x' + inf.h + ', ' + inf.srcFps.toFixed(2) + ' fps' : '-'],
                 ['Decoder', inf.decMs ? 'WebAssembly, ' + inf.decMs.toFixed(1) + ' ms a picture' + (inf.light ? ' (light)' : '') : 'WebAssembly (FFmpeg H.264)'],
                 ['Output', pathName()],
+                ['Cluster', settings.get('cluster') ? cluster.status(gateOpen, gateOpen && player.state === 'playing').text : 'Off (Play in cluster)'],
                 ['Sound', 'None yet: no verified way for an app to play audio'],
                 ['Source', 'Programmes stream from the Internet Archive; no DRM'],
             ];
@@ -406,8 +497,9 @@ mgu.run({
                 const yy = top + 36 + i * (rh + rgap), key = 'set:' + r[0];
                 plate(cv, t, rx, yy, colW, rh, false, isDown(key));
                 cv.text(r[1].toUpperCase(), rx + 20, yy + rh / 2 - 6, 15, t.dim, { font: 'bold', spacing: 1.5, literal: true });
-                cv.text(r[2](settings.get(r[0])), rx + 20, yy + rh / 2 + 22, 24, t.text, { font: 'bold', literal: true });
-                FS.button(cv, key, rx, yy, colW, rh, () => { downKey = key; downAt = Date.now(); settings.cycle(r[0]); }, { slop: 6, r: 14 });
+                const asking = r[0] === 'cluster' && Date.now() - clusterAsk < ASK_MS;
+                cv.text(asking ? 'Tap again to turn on' : r[2](settings.get(r[0])), rx + 20, yy + rh / 2 + 22, 24, asking ? '#ffcc33' : t.text, { font: 'bold', literal: true });
+                FS.button(cv, key, rx, yy, colW, rh, () => { downKey = key; downAt = Date.now(); if (r[0] === 'cluster') toggleCluster(); else settings.cycle(r[0]); }, { slop: 6, r: 14 });
             });
         }
 
