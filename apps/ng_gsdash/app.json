@@ -2,7 +2,7 @@
   "id": "ng_gsdash",
   "title": "G's Dash",
   "description": "Driver display and car hub in nine looks (Simple, M Style, GT, Heritage, Flight, Digital '84, Sim Racing, Lumen, Pixel). Swipe between Showcase (the car, Spotify or a clock), Drive (opens first; shift lights, gear, rpm, speed, g-meter, drive mode badge, oil / coolant in °F or the fuel level), Warm-up (warm-up rev limit), G-force (peak hold) and Tires (TPMS). Optional Spotify panel (art, previous / play-pause / next, seek; own QR sign-in, Spotify Premium and mgu-uplink internet). Optional Cluster map setting: CarPlay's map on the instrument cluster through the separately installed Waze on cluster tool (off unless installed and turned on). While open, the G's Dash logo in the cluster's centre map area when no map uses it, through the separately installed Cluster renderer tool (setting, on by default; nothing happens without the tool)",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "vendor": "ng",
   "loggingId": "OAN1",
   "iconGlyph": "gauge",

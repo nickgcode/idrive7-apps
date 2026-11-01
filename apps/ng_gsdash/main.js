@@ -58,7 +58,7 @@ const lookOf = (id) => LOOKS.find((l) => l.id === id) || LOOKS[0];
 const MPH = 1.609344;
 const TRAIL_MS = 3000;
 const OIL_READY_F = 194, COOLANT_READY_F = 176, HYST_F = 4;
-const VERSION = '0.7.1';
+const VERSION = '0.7.2';
 // Warm-up: the rev limit is COLD_RPM at or below COLD_F oil, rising (250 rpm steps) to WARM_REDLINE at
 // the "oil temp for full revs" setting. Auto-jump: AUTO_MS after READY it opens Drive.
 const COLD_RPM = 4000, COLD_F = 104, WARM_REDLINE = 6000, OIL_FULL_F = 180, AUTO_MS = 5000;
@@ -413,7 +413,10 @@ mgu.run({
             const t = S.t, u = lk.ui, o = opts || {};
             const lbl = lblOf(cv, u);
             lbl(label, x + 18, y + 24, Math.round(u.size * 0.72), t.dim);
-            const vs = u.size + 2, vf = { font: u.txt, spacing: u.upper ? u.spacing * 0.6 : 0, literal: true };
+            const vf = { font: u.txt, spacing: u.upper ? u.spacing * 0.6 : 0, literal: true };
+            let vs = u.size + 2;
+            // o.shrink: a smaller size (down to 15) before the text is cut
+            if (o.shrink) while (vs > 15 && cv.textWidth(valueText(u, value), vs, vf) > w - 36) vs--;
             const v = fitText(cv, valueText(u, value), vs, w - 36, vf);
             cv.text(v, x + 18, y + h - 12, vs, o.warn ? t.crit : t.text, vf);
             if (o.sub) cv.text(valueText(u, o.sub), x + 18 + cv.textWidth(v, vs, vf) + 12, y + h - 13, 14, t.dim, { font: u.lbl || u.txt, spacing: u.upper ? u.spacing : 0, literal: true });
@@ -784,7 +787,7 @@ mgu.run({
             const tone = lv.kind === 'on' ? HUB.GREEN : lv.kind === 'wait' ? '#ffb020' : lv.kind === 'error' ? (t.crit || '#ff3b30') : null;
             cardOf(lk)(cv, t, x, y, w, h, false);
             const bw = 104, bx0 = x + w - 2 * bw - 12;
-            rowText(cv, S, lk, x + (tone ? 18 : 0), y, bx0 - x - 12 - (tone ? 18 : 0), h, 'Logo in cluster when map is empty', on ? lv.text : 'Off');
+            rowText(cv, S, lk, x + (tone ? 18 : 0), y, bx0 - x - 12 - (tone ? 18 : 0), h, 'Logo in cluster when map is empty', on ? lv.text : 'Off', { shrink: true });
             if (tone && on) cv.circle(x + 22, y + h - 20, 6, tone);
             [[false, 'Off', 'off'], [true, 'On', 'on']].forEach((b, i) => {
                 const bx = bx0 + i * (bw + 6), sel = on === b[0], by = y + 10, bh = h - 20;

@@ -26,11 +26,22 @@
  *
  * Whether the map area is in use (the service's own reports, nothing guessed):
  *   - other clients' layers on the map: the service's "status" text lists every client's layers
- *     ("layer N KIND of APP on TARGET, CLASS z Z: STATE"); asked for once a second over the local
- *     socket (nothing goes to the cluster). While any other app has a layer on the map that is not
- *     hidden, ours is hidden (visible 0: it does not want the slot), and it comes back HOLD_MS after
- *     the last one went. So when the CarPlay map ends, the slot is let go (the map target's linger is 0)
- *     and the stock map, if the HMI has one parked, comes back before the logo asks again.
+ *     ("layer N KIND of APP on TARGET, CLASS z Z: STATE[ - REASON]", then "  STATS": a video layer's
+ *     "N sent, ...", an image layer's "N writes, ..."); asked for once a second over the local socket
+ *     (nothing goes to the cluster). Only a layer that is actually drawing counts (drawing()):
+ *       shown      the service draws it (visible, content within its own stall window, its target
+ *                  shown): in use. A video layer that never sent a frame does not count.
+ *       waiting /  visible but not drawn yet (target not shown or taken, under an alert): in use only
+ *       suspended  while its frame counter is advancing (it moved within FRESH_MS), i.e. frames are
+ *                  arriving and it draws as soon as the target is shown.
+ *       stalled    visible but no content (no frame yet, or its frames stopped), hidden, error: idle.
+ *     Waze on cluster makes its video layer as soon as it reaches the service and keeps it visible
+ *     while CarPlay's cluster stream connection is up, frames or not: with CarPlay not streaming that
+ *     layer is "stalled" (or "hidden"), registered but idle, and the logo shows. While any other app's
+ *     layer is drawing, ours is hidden (visible 0: it does not want the slot), and it comes back
+ *     HOLD_MS after the last one stopped. So when the CarPlay map ends, the slot is let go (the map
+ *     target's linger is 0) and the stock map, if the HMI has one parked, comes back before the logo
+ *     asks again.
  *   - the stock map (the HMI's own content in slot 0x100): our target's events say it ("parked" or
  *     "waiting", holder "stock"): the logo is then behind it, not drawn, and shows only once the
  *     stock map goes (the area really is empty).
@@ -57,7 +68,7 @@ const KLASS = 'ambient', Z = -1000;                  // the bottom of the stack
 const LOGO_W = 448, LOGO_H = 240, BADGE_H = 184;     // the regular logo, 1:1
 const CELL = 16;                                     // the pixel emblem's cell on the cluster
 const FPS_STILL = 1, FPS_ANIM = 12;                  // the image's write ceiling (fps: writes a second at most)
-const POLL_MS = 1000, HOLD_MS = 3000, YIELD_MS = 3000, LOAD_RETRY_MS = 30000;
+const POLL_MS = 1000, HOLD_MS = 3000, FRESH_MS = 2000, YIELD_MS = 3000, LOAD_RETRY_MS = 30000;
 const ANIM_MS = 80;                                  // the parked animation's step
 const SHINE_EVERY = 4200, SHINE_MS = 700, INTRO_MS = 1100;
 
@@ -137,15 +148,49 @@ function placement(kind, img) {
     return { x: Math.round((MAP_W - w) / 2), y: Math.round((MAP_H - h) / 2), w, h };
 }
 
-/** The other apps' layers on the map in a status text: [{ id, kind, app, klass, z, state }]. */
+/**
+ * The other apps' layers on the map in a status text: [{ id, kind, app, klass, z, state, frames }].
+ * frames: the layer's own counter from its stats line (video "N sent", image "N writes"), -1 if none.
+ */
 function mapLayers(text, ownApp) {
     const out = [];
+    let last = null;
     String(text || '').split('\n').forEach((line) => {
+        if (last && /^\s/.test(line)) {
+            const f = /^\s+(\d+) (sent|writes)\b/.exec(line);
+            if (f) last.frames = +f[1];
+            return;
+        }
+        last = null;
         const m = /^layer (\d+) (\w+) of (\S+) on (\w+), (\w+) z (-?\d+): (\w+)/.exec(line);
         if (!m || m[4] !== TARGET || m[3] === ownApp) return;
-        out.push({ id: +m[1], kind: m[2], app: m[3], klass: m[5], z: +m[6], state: m[7] });
+        last = { id: +m[1], kind: m[2], app: m[3], klass: m[5], z: +m[6], state: m[7], frames: -1 };
+        out.push(last);
     });
     return out;
+}
+
+/**
+ * Whether a layer from mapLayers is drawing (see the header): shown (a video one with a frame sent),
+ * or waiting / suspended with its frame counter advancing. seen: { key -> { frames, at } } from earlier
+ * polls, updated here; now: ms.
+ */
+function drawing(l, seen, now) {
+    const key = l.app + '#' + l.id, was = seen[key];
+    let at = was ? was.at : -1e15;
+    if (l.frames > 0 && (!was || l.frames !== was.frames)) at = now;   // first seen with frames, or moved
+    seen[key] = { frames: l.frames, at };
+    if (l.state === 'shown') return !(l.kind === 'video' && l.frames === 0);
+    if (l.state === 'waiting' || l.state === 'suspended') return now - at < FRESH_MS;
+    return false;                                                        // stalled, hidden, error
+}
+
+/** A short name for an app id in the Options line. */
+function appName(app) {
+    const a = String(app || '');
+    if (/waze/i.test(a)) return 'Waze';
+    if (a === 'ng_tv') return 'G\'s TV';
+    return a.length > 14 ? a.slice(0, 13) + '.' : a;
 }
 
 /* ----- the logo ----- */
@@ -170,7 +215,7 @@ class ClusterLogo {
     }
     _reset() {
         this.cr = null; this.ready = false; this.ref = 0; this.kind = ''; this.visible = null;
-        this.polled = false; this.others = []; this.busyAt = -1e15; this.yieldUntil = -1e15;
+        this.polled = false; this.others = []; this.idle = []; this.seen = {}; this.lastBusy = ''; this.busyAt = -1e15; this.yieldUntil = -1e15;
         this.target = { state: '', holder: '', reason: '', rendering: '' };
         this.layerState = ''; this.refused = '';
         this.frameKey = ''; this.animAt = 0; this.shownAt = 0;
@@ -236,11 +281,17 @@ class ClusterLogo {
         cr.on('refused', (op, ref, reason) => { if (this.cr === cr) { this.refused = (op || '?') + ': ' + (reason || '?'); this.log.warn('cluster logo: refused ' + this.refused); } });
         cr.on('status', (text) => {
             if (this.cr !== cr) return;
-            const others = mapLayers(text, this.app).filter((l) => l.state !== 'hidden' && l.state !== 'error');
-            if (others.length) this.busyAt = this.now();
+            const now = this.now(), seen = {}, others = [], idle = [];
+            mapLayers(text, this.app).forEach((l) => {
+                (drawing(l, this.seen, now) ? others : idle).push(l);
+                seen[l.app + '#' + l.id] = this.seen[l.app + '#' + l.id];
+            });
+            this.seen = seen;                                   // layers that went are forgotten
+            if (others.length) { this.busyAt = now; this.lastBusy = others[0].app; }
             const was = this.others.map((l) => l.app).join(','), is = others.map((l) => l.app).join(',');
-            if (was !== is) this.log.info('cluster logo: map ' + (is ? 'in use by ' + is : 'free of other apps'));
-            this.others = others;
+            if (was !== is) this.log.info('cluster logo: map ' + (is ? 'in use by ' + is : 'free of other apps') +
+                (idle.length ? ' (idle: ' + idle.map((l) => l.app + ' ' + l.state).join(', ') + ')' : ''));
+            this.others = others; this.idle = idle;
             this.polled = true;
             this._apply();
         });
@@ -318,23 +369,30 @@ class ClusterLogo {
     }
     close() { this._off(); this.want = false; }
 
-    /** The Options line: { kind: 'on' | 'wait' | 'off' | 'none' | 'error', text }. */
+    /** The Options line, short enough for its row: { kind: 'on' | 'wait' | 'off' | 'none' | 'error', text }. */
     view() {
         if (!this.enabled) return { kind: 'off', text: 'Off' };
-        if (this.err) return { kind: 'none', text: this.err.text };
-        if (!this.want) return { kind: 'off', text: 'On - shows while G\'s Dash is open' };
-        if (!this.cr || !this.ready || !this.polled) return { kind: 'wait', text: 'Connecting to the Cluster renderer' };
-        if (this.layerState === 'error') return { kind: 'error', text: 'The renderer refused the logo' };
-        if (this.others.length) return { kind: 'wait', text: 'Map in use (' + this.others[0].app + ') - logo off' };
-        if (!this.visible) return { kind: 'wait', text: 'Map just ended - logo in a moment' };
+        if (this.err) return { kind: 'none', text: SHORT_ERR[this.err.error] || this.err.text };
+        if (!this.want) return { kind: 'off', text: 'On - while G\'s Dash is open' };
+        if (!this.cr || !this.ready || !this.polled) return { kind: 'wait', text: 'Connecting to renderer' };
+        if (this.layerState === 'error') return { kind: 'error', text: 'Renderer refused the logo' };
+        if (this.others.length) return { kind: 'wait', text: 'Waiting - ' + appName(this.others[0].app) + ' is drawing' };
+        if (!this.visible) {
+            const stopped = this.lastBusy && this.now() - this.busyAt < HOLD_MS;
+            return { kind: 'wait', text: (stopped ? appName(this.lastBusy) + ' stopped - logo soon' : 'Logo in a moment') };
+        }
         const T = this.target;
-        if ((T.state === 'parked' || T.state === 'waiting') && T.holder === 'stock') return { kind: 'wait', text: 'Stock map shown - logo waits behind it' };
-        if (T.state === 'parked' || T.state === 'waiting') return { kind: 'wait', text: 'Map area taken - logo waits' + (T.holder ? ' (' + T.holder + ')' : '') };
-        if (T.state === 'shown') return { kind: 'on', text: 'Logo shown' + (T.rendering === 'verified' ? ' (verified)' : '') };
+        if ((T.state === 'parked' || T.state === 'waiting') && T.holder === 'stock') return { kind: 'wait', text: 'Behind the stock map' };
+        if (T.state === 'parked' || T.state === 'waiting') return { kind: 'wait', text: 'Map area taken - waiting' };
+        if (T.state === 'shown') {
+            if (this.idle.length) return { kind: 'on', text: appName(this.idle[0].app) + ' idle - logo shown' };
+            return { kind: 'on', text: 'Shown' + (T.rendering === 'verified' ? ' (verified)' : '') };
+        }
         if (T.state === 'unavailable') return { kind: 'error', text: 'Map area unavailable' };
         return { kind: 'wait', text: 'Asking for the map area' };
     }
 }
+const SHORT_ERR = { missing: 'Needs Cluster renderer', noclient: 'Update Cluster renderer', untrusted: 'Renderer not trusted', load: 'Renderer failed to load' };
 
 /**
  * The parked emblem's motion at t ms after it started: the stripes slide in (INTRO_MS), then a shine
@@ -354,5 +412,5 @@ function motion(t, ew) {
     return { key: 'h' + shine, opts: { shine } };
 }
 
-module.exports = { ClusterLogo, loadClient, trusted, mapLayers, pixelImage, regularImage, placement, motion, cellRaster,
-    TARGET, KLASS, Z, MAP_W, MAP_H, CELL, LOGO_W, LOGO_H, FPS_STILL, FPS_ANIM, POLL_MS, HOLD_MS, YIELD_MS };
+module.exports = { ClusterLogo, loadClient, trusted, mapLayers, drawing, appName, pixelImage, regularImage, placement, motion, cellRaster,
+    TARGET, KLASS, Z, MAP_W, MAP_H, CELL, LOGO_W, LOGO_H, FPS_STILL, FPS_ANIM, POLL_MS, HOLD_MS, YIELD_MS, FRESH_MS };
