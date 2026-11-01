@@ -1,6 +1,8 @@
 'use strict';
 /**
- * tv_net.js - HTTPS GETs for G's TV (Node 8, no npm modules): JSON, and byte ranges of a video file.
+ * tv_net.js - HTTP(S) for G's TV (Node 8, no npm modules): JSON, byte ranges of a video file, and the
+ * phone hand-off's mailbox (request(): GET / POST). Plain http is allowed only for a source the viewer
+ * added (a link from their own phone); the lineup and the mailbox are https.
  *
  * Network as G's Music (spotify.js): mgu-uplink gives an app with "mguInternet": true a route out and writes
  * its lease to <data>/uplink.json; the unit's own resolver doesn't reach the internet, so host names go
@@ -8,6 +10,7 @@
  * Redirects (archive.org /download -> a data node) are followed, at most 5.
  */
 const https = require('https');
+const http = require('http');
 const dns = require('dns');
 const fs = require('fs');
 const path = require('path');
@@ -40,6 +43,7 @@ class Net {
     constructor(dataDir, log) {
         this.dataDir = dataDir; this.log = log;
         this.agent = new https.Agent({ keepAlive: true, maxSockets: 4 });
+        this.plain = new http.Agent({ keepAlive: true, maxSockets: 2 });
         this.redirects = new Map();         // url -> final url (data node), kept while it works
         this.ca = trustedCa(dataDir);
         this.bytes = 0;
@@ -73,36 +77,48 @@ class Net {
     }
 
     /** GET href: resolves { status, headers, body, url } (the final URL after redirects). */
-    get(href, headers, maxBody, hops) {
+    get(href, headers, maxBody, hops) { return this.request('GET', href, headers, null, maxBody, hops); }
+
+    /**
+     * method href (http: or https: only; GET redirects followed, at most 5): resolves
+     * { status, headers, body, url }. body: a string or Buffer for POST.
+     */
+    request(method, href, headers, body, maxBody, hops) {
         hops = hops || 0;
+        maxBody = maxBody || 1024 * 1024;
         return new Promise((resolve, reject) => {
             const u = url.parse(href);
-            if (u.protocol !== 'https:') { reject(NetError('only https URLs', 'URL')); return; }
-            const opts = { method: 'GET', host: u.hostname, port: u.port || 443, path: u.path, agent: this.agent,
-                headers: Object.assign({ 'User-Agent': 'GsTV/0.1 (BMW iDrive 7 head unit)' }, headers || {}), timeout: 15000 };
+            const tls = u.protocol === 'https:';
+            if (!tls && u.protocol !== 'http:') { reject(NetError('only http(s) URLs', 'URL')); return; }
+            if (!u.hostname) { reject(NetError('no host in the URL', 'URL')); return; }
+            const opts = { method, host: u.hostname, port: u.port || (tls ? 443 : 80), path: u.path, agent: tls ? this.agent : this.plain,
+                headers: Object.assign({ 'User-Agent': 'GsTV/0.4 (BMW iDrive 7 head unit)' }, headers || {}), timeout: 15000 };
+            if (body != null) opts.headers['Content-Length'] = Buffer.byteLength(body);
             const lookup = this._lookup();
             if (lookup) opts.lookup = lookup;
-            if (this.ca) opts.ca = this.ca;
-            const req = https.request(opts, (res) => {
-                if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            if (tls && this.ca) opts.ca = this.ca;
+            const req = (tls ? https : http).request(opts, (res) => {
+                if (method === 'GET' && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
                     res.resume();
                     if (hops >= 5) { reject(NetError('too many redirects', 'REDIRECT', res.statusCode)); return; }
                     const next = url.resolve(href, res.headers.location);
-                    this.get(next, headers, maxBody, hops + 1).then(resolve, reject);
+                    this.request(method, next, headers, null, maxBody, hops + 1).then(resolve, reject);
                     return;
                 }
-                const chunks = []; let n = 0;
+                const chunks = []; let n = 0, done = false;
                 res.on('data', (c) => {
+                    if (done) return;
                     n += c.length; this.bytes += c.length;
-                    if (n > maxBody) { req.abort(); reject(NetError('response too large', 'TOOBIG')); return; }
+                    if (n > maxBody) { done = true; req.abort(); reject(NetError('response too large', 'TOOBIG')); return; }
                     chunks.push(c);
                 });
-                res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks), url: href }));
+                res.on('end', () => { if (!done) { done = true; resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks), url: href }); } });
                 res.on('error', reject);
                 res.setTimeout(20000, () => { req.abort(); reject(NetError('stalled', 'ETIMEDOUT')); });
             });
             req.on('timeout', () => { req.abort(); reject(NetError('timed out', 'ETIMEDOUT')); });
             req.on('error', reject);
+            if (body != null) req.write(body);
             req.end();
         });
     }

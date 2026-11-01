@@ -1,8 +1,8 @@
 {
   "id": "ng_tv",
   "title": "G's TV",
-  "description": "EXPERIMENTAL. Watch a TV channel's picture while parked: by default spelunkr.tv's Toonertia channel (Toonami recordings on the Internet Archive, no DRM, no sign-in), decoded in the app (WebAssembly H.264). Video only, no sound yet. Parked only: the picture shows only while the speed is known and at most 3 km/h and the selector is in P, otherwise 'Video available when parked'. Optional, off by default: Play in cluster, the same picture in the instrument cluster's central map area (between the dials) while parked, removed the moment the car leaves P. New, an experiment for cars with a head-up display (switched on): HUD test shows a still test card on the HUD for 30 s, and Play in HUD shows the picture there instead of in the cluster; parked only, one of the three at a time, each needs two taps and starts off again every time. These need the separate Cluster renderer tool from the Store. Needs mgu-uplink internet",
-  "version": "0.3.1",
+  "description": "EXPERIMENTAL. Watch video pictures while parked. A home screen of sources: Spelunkr (spelunkr.tv's channels of programmes on the Internet Archive, no DRM, no sign-in) with CH up / CH down, swipe up / down to change channel, a channel banner, a 2-hour guide with category filters and a fullscreen picture; and your own sources: direct links to one MP4 file (H.264 video) each, sent from your phone with a QR code or a 6-digit code (end-to-end encrypted), checked by the car before they are saved, resumed where you left off. Hold a source to rename it, send a new link or remove it. Web pages and players are refused. Decoded in the app (WebAssembly H.264). Video only, no sound yet. Parked only: the picture shows only while the speed is known and at most 3 km/h and the selector is in P, otherwise 'Video available when parked'. Optional, off by default: Play in cluster, HUD test and Play in HUD (parked only, one at a time, each needs two taps; the HUD ones start off every time; they need the separate Cluster renderer tool from the Store). Needs mgu-uplink internet",
+  "version": "0.4.0",
   "vendor": "ng",
   "loggingId": "OAN3",
   "internet": true,
@@ -16,10 +16,12 @@
     }
   },
   "config": {
-    "comment": "The channel: lineupUrl and channel (spelunkr.tv's lineup), or streamUrl (one https MP4 with H.264 video, looped) instead. <data>/tv.json with the same keys overrides these on the car.",
+    "comment": "Spelunkr: lineupUrl and channel (the first channel shown). streamUrl: one http(s) MP4 with H.264 video, played at the start instead of the home screen (testing). relay: the public phone page for Add source (https, holds no secrets); mailbox: the ntfy server the phone and the car meet on (messages are AES-256-GCM sealed). <data>/tv.json with lineupUrl / channel / streamUrl overrides these on the car.",
     "lineupUrl": "https://data.spelunkr.tv/lineup.json",
     "channel": "toonertia",
-    "streamUrl": ""
+    "streamUrl": "",
+    "relay": "https://nickgcode.github.io/idrive7-apps/tv/",
+    "mailbox": "https://ntfy.sh"
   },
   "screens": [
     {
@@ -29,7 +31,8 @@
       "fullscreen": true,
       "buttons": [
         ["BTN_PLAY", "Play"],
-        ["BTN_LIVE", "Live"],
+        ["BTN_CHDN", "Ch -"],
+        ["BTN_CHUP", "Ch +"],
         ["BTN_MORE", "More"]
       ]
     },
