@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://ntfy.sh; base-uri 'none'; form-action 'none'">
+<meta name="robots" content="noindex">
+<title>G's TV: add a source</title>
+<link rel="stylesheet" href="source.css">
+</head>
+<body>
+<main>
+  <h1><span class="dot"></span> G's TV</h1>
+
+  <section id="code" hidden>
+    <h2>Enter the code from the car</h2>
+    <p>G's TV shows a 6-digit code under the QR code (<b>Add source</b>).</p>
+    <label for="digits">Code</label>
+    <input id="digits" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="123 456">
+    <button id="code-go">Continue</button>
+    <p id="code-err" class="err" hidden></p>
+  </section>
+
+  <section id="form" hidden>
+    <h2 id="form-title">Add a source to your car</h2>
+    <p id="form-intro">Send the name and the link of one video file. The car checks the link and shows it
+       to you before it saves anything.</p>
+    <label for="name">Name</label>
+    <input id="name" maxlength="32" autocomplete="off" placeholder="My Stream">
+    <label for="url">Stream URL</label>
+    <input id="url" type="url" maxlength="2048" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://example.com/video.mp4">
+    <p class="small" id="url-help">A <b>direct link to an MP4 file</b> (H.264 video), starting with https:// or http://.
+       Web pages and players don't work: the car only plays the video file itself.</p>
+    <label class="check"><input type="checkbox" id="ok"> I have the right to watch this video and to play it in my car. G's TV plays
+       the link as it is; what it shows is my responsibility.</label>
+    <button id="send">Send to the car</button>
+    <p id="form-err" class="err" hidden></p>
+  </section>
+
+  <section id="busy" hidden>
+    <h2 id="busy-title">Sending to the car…</h2>
+    <p id="busy-text">Keep this page open for a moment.</p>
+    <div class="spinner"></div>
+  </section>
+
+  <section id="done" hidden>
+    <h2>✓ Saved in the car</h2>
+    <p>The source is on G's TV's home screen. You can close this page.</p>
+  </section>
+
+  <section id="fail" hidden>
+    <h2>Not saved</h2>
+    <p id="fail-text"></p>
+    <p class="small">In G's TV, tap <b>Add source</b> for a new code and try again.</p>
+  </section>
+
+  <footer>Static page, no server part: the name and link go end-to-end encrypted to your car's mailbox
+    on ntfy.sh, the only server this page talks to. Nothing is kept on this page.</footer>
+</main>
+<script src="source.js"></script>
+</body>
+</html>
