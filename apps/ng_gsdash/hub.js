@@ -183,7 +183,8 @@ function warmup(cv, st, S, M) {
 }
 
 /* ---------- g-force ---------- */
-function gforce(cv, st, S, M, music, gr, lk) {
+/** G-force: the g-meter and peaks; the right panel is always the live g readouts (0.11.1: never Spotify, whatever Drive's right panel is). */
+function gforce(cv, st, S, M) {
     const t = st.t, cx = 352, cy = S.y + 268, r = 206, max = S.gMax;
     title(cv, st, S, 'G-force', 'Peak hold this session · hold to reset');
     G.gmeter(cv, t, cx, cy, r, { lat: M.lat, long: M.long, max, trail: M.trail });
@@ -217,12 +218,8 @@ function gforce(cv, st, S, M, music, gr, lk) {
         cv.roundRect(tx + 18, y + th - 9, Math.max(4, bw * f), 4, 2, hc);
     });
     st.txt(cv, 'Session ' + M.session, tx, S.y + S.h - 14, 15, t.dim);
-    // right: Spotify panel (setting), else live readouts
+    // right: always the live readouts (0.11.1: the Drive page's right-panel setting does not apply here)
     const rx = 980, rw = S.x + S.w - rx;
-    if (S.panel === 'spotify' && music) {
-        music.panel(cv, S, lk, { x: rx, y: S.y + 54, w: rw, h: S.h - 54 - 92 }, gr);
-        return;
-    }
     const ph = S.h - 54 - 92;
     st.plate(cv, rx, S.y + 54, rw, ph);
     st.txt(cv, 'Now', rx + 24, S.y + 90, 18, t.dim);

@@ -115,7 +115,7 @@ const lookOf = (id) => LOOKS.find((l) => l.id === id) || LOOKS.find((l) => l.id 
 const MPH = 1.609344;
 const TRAIL_MS = 3000;
 const OIL_READY_F = 194, COOLANT_READY_F = 176, HYST_F = 4;
-const VERSION = '0.11.0';
+const VERSION = '0.11.1';
 // Warm-up: the rev limit is COLD_RPM at or below COLD_F oil, rising (250 rpm steps) to WARM_REDLINE at
 // the "oil temp for full revs" setting. Auto-jump: AUTO_MS after READY it opens Drive.
 const COLD_RPM = 4000, COLD_F = 104, WARM_REDLINE = 6000, OIL_FULL_F = 180, AUTO_MS = 5000;
@@ -345,7 +345,8 @@ mgu.run({
         let ownNow = false;
         const musicOnHub = () => {
             const id = HUB.SCREENS[scr][0];
-            return (id === 'showcase' && showcaseMusic()) || (panelOn() && ((id === 'drive' && !!look().panelRect) || id === 'gforce'));
+            // G-force (0.11.1) always shows its g readouts on the right, never Spotify
+            return (id === 'showcase' && showcaseMusic()) || (panelOn() && id === 'drive' && !!look().panelRect);
         };
         const music = new Music(ctx, {
             shown: () => visible() && ((page === 0 && musicOnHub()) || page === 2),
@@ -1396,7 +1397,7 @@ mgu.run({
                     if (cv.own) favDrive(cv, S, lk);
                 } else if (id === 'showcase') { SC.music = showcaseMusic(); SC.dim = PREFS.bgLevel(settings.get(PREFS.BG_KEY)); HUB.showcase(cv, st, S, music, lk, gr, SC, clock.now(S.now)); }
                 else if (id === 'warmup') HUB.warmup(cv, st, Object.assign({}, S, { redline: WARM_REDLINE, maxRpm: Math.max(7000, S.maxRpm) }), warmModel(S));
-                else if (id === 'gforce') HUB.gforce(cv, st, S, gModel(S), S.panel === 'spotify' ? music : null, gr, lk);
+                else if (id === 'gforce') HUB.gforce(cv, st, S, gModel(S));
                 else if (id === 'tires') HUB.tires(cv, st, S, tireModel(S));
                 HUB.dots(cv, st, gr, scr, HUB.SCREENS.length, id === 'drive' && !!lk.dotsAbove && S.panel !== 'spotify');
                 if (toastMsg) {
