@@ -1,8 +1,8 @@
 {
   "id": "ng_tv",
   "title": "G's TV",
-  "description": "EXPERIMENTAL. Watch video pictures while parked. A home screen of sources: Spelunkr (spelunkr.tv's channels of programmes on the Internet Archive, no DRM, no sign-in) with CH up / CH down, swipe up / down to change channel, a channel banner, a 2-hour guide with category filters and a fullscreen picture; and your own sources: direct links to one MP4 file (H.264 video) each, sent from your phone with a QR code or a 6-digit code (end-to-end encrypted), checked by the car before they are saved, resumed where you left off. Instant resume: back in P the picture continues where it stopped (the last picture stays dimmed while driving), and opening the app goes back to what you watched; for Spelunkr choose resume where I stopped or jump to what's on now. Hold a source to rename it, send a new link or remove it. Web pages and players are refused. Decoded in the app (WebAssembly H.264). Video only, no sound yet. Parked only: the picture shows only while the speed is known and at most 3 km/h and the selector is in P, otherwise 'Video available when parked'. Optional, off by default: Play in cluster, HUD test, Play in HUD, Full cluster test and Side panels test (parked only, one at a time, each needs two taps; all but Play in cluster start off every time; the tests stop after 30 s; they need the separate Cluster renderer tool from the Store). Needs mgu-uplink internet",
-  "version": "0.4.1",
+  "description": "EXPERIMENTAL. Watch video pictures while parked. A home screen of sources: Spelunkr (spelunkr.tv's channels of programmes on the Internet Archive, no DRM, no sign-in) with CH up / CH down, swipe up / down to change channel, a channel banner, a 2-hour guide with category filters and a fullscreen picture; and your own sources: direct links to one MP4 file (H.264 video) each, sent from your phone with a QR code or a 6-digit code (end-to-end encrypted), checked by the car before they are saved, resumed where you left off. Instant resume: back in P the picture continues where it stopped (the last picture stays dimmed while driving), and opening the app goes back to what you watched; for Spelunkr choose resume where I stopped or jump to what's on now. Hold a source to rename it, send a new link or remove it. Web pages and players are refused. Decoded in the app (WebAssembly H.264). Video only, no sound yet. Parked only: the picture shows only while the speed is known and at most 3 km/h and the selector is in P, otherwise 'Video available when parked'. HUD and Cluster buttons on the picture's controls: one tap puts the video in the head-up display or the instrument cluster (parked only, one at a time, off by default). Cluster screen in the settings: the centre map area, the whole cluster, or the left or right gauge's area (the rest of the cluster stays visible). Both need the separate Cluster renderer tool from the Store. Needs mgu-uplink internet",
+  "version": "0.4.2",
   "vendor": "ng",
   "loggingId": "OAN3",
   "internet": true,
@@ -47,20 +47,14 @@
     }
   ],
   "settings": [
-    {"key": "mode", "label": "Pictures", "type": "choice", "default": "auto",
-     "options": [["auto", "Auto"], ["full", "Every picture"], ["light", "Light (about 10 fps)"]]},
     {"key": "maxFps", "label": "At most (GPU video)", "type": "number", "unit": "fps", "default": 30, "markDefault": true,
      "steps": [10, 15, 20, 30]},
-    {"key": "theme", "label": "Colours", "type": "choice", "default": "m_tricolour",
-     "options": [["m_red", "M Red"], ["m_tricolour", "M Tricolour"], ["ice", "Ice White"], ["amber", "Night Amber"]]},
-    {"key": "renderer", "label": "Renderer", "type": "choice", "default": "auto", "reset": 2,
-     "options": [["auto", "GPU"], ["software", "Software (fallback)"]]},
     {"key": "afterDrive", "label": "After driving (Spelunkr)", "type": "choice", "default": "resume",
      "options": [["resume", "Resume where I stopped"], ["live", "Jump to what's on now"]]},
     {"key": "cluster", "label": "Play in cluster (parked)", "type": "bool", "default": false},
-    {"key": "hudtest", "label": "HUD test, 30 s (parked)", "type": "bool", "default": false},
-    {"key": "hud", "label": "Play in HUD (parked, experiment)", "type": "bool", "default": false},
-    {"key": "paneltest", "label": "Full cluster test, 30 s (parked)", "type": "bool", "default": false},
-    {"key": "sidetest", "label": "Side panels test, 30 s (parked, after the full test)", "type": "bool", "default": false}
-  ]
+    {"key": "clusterScreen", "label": "Cluster screen (parked)", "type": "choice", "default": "centre",
+     "options": [["centre", "Centre (map area)"], ["full", "Full (whole cluster)"], ["left", "Left (left gauge)"], ["right", "Right (right gauge)"]]}
+  ],
+  "_retiredSettings": "settings 0.4.1 had and 0.4.2 dropped: a saved value is deleted on start (kit/runtime/mgu.js). Pictures is always Auto, Colours always M Tricolour, the Renderer always the GPU one; the HUD test and the Full cluster / Side panels tests are gone (Cluster screen plays the video there instead); Play in HUD is the HUD button on the picture (its on / off kept by the app, not a setting).",
+  "retiredSettings": ["mode", "theme", "renderer", "hudtest", "paneltest", "sidetest"]
 }

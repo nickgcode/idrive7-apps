@@ -26,8 +26,8 @@
  * available when parked". Only where there is no car at all (no speed and no car signals: the emulator
  * without signals, the PC preview) the environment variable GSTV_SIMULATE_PARKED=1 counts as parked.
  *
- * Play in cluster / Play in HUD / HUD test (0.3.x, parked only, each needs two taps; the HUD ones are off
- * again at every start): unchanged. They follow the watching view: on the home screen nothing plays.
+ * Play in cluster / Play in HUD (0.3.x, parked only; two taps each until 0.4.2): they follow the watching
+ * view: on the home screen nothing plays. (0.4.2: Play in HUD is the HUD button, see below.)
  *
  * 0.4.1, instant resume: when the gate blanks, the player only pauses and keeps its warm state (the
  * index, the decoder, the samples fetched past it, at most WARM_BYTES, and the next picture); the last
@@ -40,8 +40,22 @@
  *
  * 0.4.1, the panel test (parked only, two taps, off at every start, 30 s): a still test card over the
  * whole cluster ("panel" target, tv_cluster.js), "Full cluster test", then "Side panels test" (only after
- * the full one ran this session). Exactly the HUD test's rules, and one of Cluster video / HUD test /
- * Play in HUD / panel test at a time (panel and HUD share a scene id anyway).
+ * the full one ran this session). Proven on the car: the panel covers the whole 1920x720 cluster and what a
+ * layer leaves out stays see-through; 0.4.2 replaced the tests with the Cluster screen (below).
+ *
+ * 0.4.2, the HUD button: Play in HUD is a main feature, a HUD toggle in the picture's top controls next
+ * to Cluster, drawn like it (on / off shown; its choice kept across restarts as Cluster's is, in
+ * settings.json under 'hud', no longer a setting row or an HMI menu item). Cluster and HUD now turn on or
+ * off with one tap (no "Tap again" confirm). Cluster screen (a setting; the Cluster button's label and
+ * glyph show it): Centre (the map area, as before), Full (the whole cluster, opaque, letterboxed), Left or
+ * Right (the video in that gauge's 640x720 third, letterboxed, everything else see-through): the panel
+ * target, tv_cluster.js. Full / Left / Right and the HUD share a scene: one at a time, as all outputs are
+ * (turning one on turns the other off, with a message).
+ * Every safety rule unchanged: the picture on the HUD and every cluster screen only through the parked gate (speed known and at
+ * most 3 km/h, P, 2 s settled; dropped on the gear / speed signal itself), off while moving, one output
+ * at a time, never the alert class, never 7702 / 7703. Without the Cluster renderer tool the button says
+ * so and stays off. The HUD test, the panel tests, Pictures (always Auto), Colours (always M Tricolour) and Renderer
+ * (always GPU) settings are gone (app.json retiredSettings drops their saved values).
  *
  * Full-screen touch app (kit/runtime/fullscreen.js); the HMI's bar buttons and the More menu do the main
  * jobs where the kit can't run the screen. Node 8: no optional chaining, no ?? and no object spread.
@@ -56,7 +70,7 @@ const { Net } = require('./tv_net');
 const { Lineup, config, clean } = require('./tv_channel');
 const Player = require('./tv_player');
 const { ShmOut, ImageOut } = require('./tv_out');
-const { ClusterOut } = require('./tv_cluster');
+const { ClusterOut, loadClient } = require('./tv_cluster');
 const Src = require('./tv_sources');
 const { Handoff } = require('./tv_handoff');
 const qrcodegen = require('./qrcodegen');
@@ -68,14 +82,13 @@ const VIDEO_ID = 1;                 // the renderer's video id, and the pixel im
 const GB_W = 116, HEAD_H = 72;
 const MAX_KMH = parkedWatch.MAX_KMH;    // 3
 const RESUME_MS = 2000;             // parked this long before the picture comes back
-const ASK_MS = 5000;                // Play in cluster / HUD, HUD test: the second tap that confirms, within this
-const HUD_TEST_MS = Math.min(30000, Number(process.env.GSTV_HUD_TEST_MS) || 30000);
 const RETUNE_MS = 60000;            // "jump to what's on now": blanked longer than this, back to what the channel plays now
 const STILL_ID = 2;                 // the dimmed last picture under the parked message (a pixel image)
 const WARM_MS = Math.min(30 * 60000, Number(process.env.GSTV_WARM_MS) || 30 * 60000);   // the warm state, at most this long paused
 const WARM_BYTES = 8 * 1024 * 1024; // fetched samples kept while paused (the keyframe's chunk always)
 const WARM_FREE_MB = 96;            // MemAvailable below this: memory is tight, the warm state goes
 const WARM_RSS_MB = 420;            // or the app itself above this
+const SCREEN_NAME = { centre: 'Centre', full: 'Full', left: 'Left', right: 'Right' };   // Cluster screen
 const AFTER_NAME = { resume: 'Resume where I stopped', live: 'Jump to what\'s on now' };
 const BANNER_MS = 4000;             // the channel banner after a change
 const CONTROLS_MS = 5000;           // the controls over the picture, after a tap
@@ -84,8 +97,6 @@ const REMOVE_MS = 5000;             // Remove, then Tap again to remove within t
 const POS_MS = 15000;               // a custom source's position saved this often while it plays
 const SWIPE = 70;                   // px up / down on the picture: a channel change
 const RAIL_W = 230, GAP = 14, TOP_H = 88, BANNER_H = 150;
-const THEME_NAME = { m_red: 'M Red', m_tricolour: 'M Tricolour', ice: 'Ice White', amber: 'Night Amber' };
-const MODE_NAME = { auto: 'Auto', full: 'Every picture', light: 'Light (about 10 fps)' };
 const SIM = process.env.GSTV_SIMULATE_PARKED === '1';
 const OFFLINE = /ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|ECONNREFUSED|ETIMEDOUT|ECONNRESET|NOLEASE/;
 
@@ -173,11 +184,13 @@ mgu.run({
         const tapped = tapSignals(ctx, () => onSignal());
         const car = new Car(tapped, ['gear']);
         const parked = parkedWatch.watch(tapped, log);
-        const cluster = new ClusterOut({ log, app: ctx.spec.id || 'ng_tv' });
+        const cluster = new ClusterOut({ log, app: ctx.spec.id || 'ng_tv' });              // Cluster screen Centre
         const hud = new ClusterOut({ log, app: ctx.spec.id || 'ng_tv', target: 'hud' });
-        const panel = new ClusterOut({ log, app: ctx.spec.id || 'ng_tv', target: 'panel' });
-        // the HUD experiment and the panel tests are never on at a start, whatever was saved
-        ['hud', 'hudtest', 'paneltest', 'sidetest'].forEach((k) => { if (settings.get(k)) settings.set(k, false); });
+        const screen = () => { const v = settings.get('clusterScreen'); return SCREEN_NAME[v] && v !== 'centre' ? v : 'centre'; };
+        const panel = new ClusterOut({ log, app: ctx.spec.id || 'ng_tv', target: screen() === 'centre' ? 'full' : screen() });  // Full / Left / Right
+        const clOut = () => (screen() === 'centre' ? cluster : panel);
+        // Cluster and HUD keep their choice (one at a time: should both have been saved on, Cluster wins)
+        if (settings.get('hud') && settings.get('cluster')) settings.set('hud', false);
 
         // 0.4.1: opening the app goes back to what was watched last (tuned where it stopped once parked)
         const lastKey = store.data.last;
@@ -203,7 +216,6 @@ mgu.run({
         let regGen = -1, regGpu = null;
         let posAt = 0;
         let warmAt = 0, memAt = 0;          // paused since (the warm state's age), the last memory check
-        let panelRan = false;               // the full cluster test was up once this session
         const say = (text, ms) => { toast = { text, until: Date.now() + (ms || 3000) }; };
         const watching = () => page === 'watch' || page === 'guide' || (page === 'settings' && (setFrom === 'watch' || setFrom === 'guide'));
 
@@ -220,7 +232,7 @@ mgu.run({
         const player = new Player({
             net, log, dir: __dirname,
             cap: capFps,
-            mode: () => settings.get('mode') || 'auto',
+            mode: () => 'auto',                         // 0.4.2: no Pictures setting
             sink: (f) => {
                 if (!gateOpen) return;                         // never a picture while not parked
                 if (videoPath()) shm.write(f);
@@ -228,7 +240,7 @@ mgu.run({
                 const toCluster = !!settings.get('cluster'), toHud = !!settings.get('hud');
                 if (toCluster || toHud) {
                     if (gate().ok) {                           // the gate again, now, before each cluster / HUD picture
-                        if (toCluster) cluster.write(f);
+                        if (toCluster) clOut().write(f);
                         if (toHud) hud.write(f);
                     } else gateStep();                         // closes the gate and takes the picture off
                 }
@@ -238,7 +250,8 @@ mgu.run({
             if (player.state === 'paused') { if (!warmAt) warmAt = Date.now(); } else if (player.state !== 'buffering') warmAt = 0;
             if (/^(idle|tuning|paused|offline|error)$/.test(player.state)) {
                 cluster.stop();
-                if (!settings.get('hudtest')) hud.stop();      // the test card does not depend on the player
+                panel.stop();
+                hud.stop();
             }
             labels();
         });
@@ -437,10 +450,8 @@ mgu.run({
         }
         function blank(why) {
             cluster.stop();                                    // first: the cluster and HUD pictures go at once
-            hud.stop();
             panel.stop();
-            if (settings.get('hudtest')) endHudTest(why || 'hidden');
-            endPanelTests(why || 'hidden');
+            hud.stop();
             img.clear();
             const gpu = ctx.display && ctx.display.gpu;
             if (gpu && gpu.dropVideo) gpu.dropVideo(VIDEO_ID);
@@ -514,7 +525,7 @@ mgu.run({
             if (!gateOpen) { say('Video available when parked'); return; }
             if (!src) { openLast(); return; }
             want = !(want && !player.paused);
-            if (want) resumeOrLive(); else { player.pause(); endPanelTests('paused'); savePos(); }
+            if (want) resumeOrLive(); else { player.pause(); savePos(); }
             labels();
         }
         function openLast() {
@@ -528,100 +539,76 @@ mgu.run({
         ui.onClick('BTN_CHDN', () => { if (page !== 'watch' || !src) openLast(); else chStep(-1); });
         ui.onClick('BTN_MORE', () => ui.open('MORE'));
 
-        /* ----- Play in cluster ('cluster'), Play in HUD ('hud'), HUD test ('hudtest'): all off by default ----- */
-        // A first tap asks, a second within ASK_MS turns it on. The confirm holds for every way in: the page's
-        // buttons, the own settings page, and the kit's generic settings (the HMI's More menu checkbox, the
-        // settings sheet), which set the bool in one tap. A change to on that did not come through a second tap
-        // within ASK_MS counts as the first tap and is undone. One cluster / HUD output at a time.
+        /* ----- Cluster ('cluster', on the 'clusterScreen'), HUD ('hud', 0.4.2: the button only): off by default ----- */
+        // One tap turns either on or off (the buttons, the own settings page, the HMI's More menu checkbox);
+        // what reaches the car is still gated (parked only, see the gate). One at a time: the panel screens
+        // (Full / Left / Right) and the HUD share a scene id, and the centre's too was always one at a time.
         const OUT = {
-            cluster: { name: 'Cluster', ask: 'Tap Cluster again to play in the cluster\'s map area (parked only)' },
-            hud: { name: 'Play in HUD', ask: 'Tap HUD again to play in the HUD (experiment, parked only)' },
-            hudtest: { name: 'HUD test', ask: 'Tap again to show a test card in the HUD for 30 s (parked only)' },
-            paneltest: { name: 'Full cluster test', ask: 'Tap again to show a test card over the whole cluster for 30 s (parked only)' },
-            sidetest: { name: 'Side panels test', ask: 'Tap again to show the side panels test card for 30 s (parked only)' },
+            cluster: { name: 'Cluster' },
+            hud: { name: 'HUD', needsTool: true },
         };
-        const asks = { cluster: 0, hud: 0, hudtest: 0, paneltest: 0, sidetest: 0 };
         let okKey = '';
-        let hudTestAt = 0, panelTestAt = 0;
-        const SIDE_FIRST = 'Side panels test: run the Full cluster test first';
-        const panelKey = () => (settings.get('paneltest') ? 'paneltest' : settings.get('sidetest') ? 'sidetest' : '');
-        const asking = (k) => Date.now() - asks[k] < ASK_MS;
-        const askOut = (k) => { asks[k] = Date.now(); say(OUT[k].ask, ASK_MS); };
+        /** Why an output can't be turned on: the Cluster renderer tool missing or broken (its own words); '' if it can. */
+        function noTool() {
+            const c = loadClient();
+            return c.error ? c.text : '';
+        }
         function toggleOut(k) {
-            if (settings.get(k)) { asks[k] = 0; settings.set(k, false); say(OUT[k].name + ': off'); return; }
-            if (k === 'sidetest' && !panelRan) { say(SIDE_FIRST); return; }
-            if (Date.now() - asks[k] > ASK_MS) { askOut(k); return; }
-            asks[k] = 0; toast = null;
+            if (settings.get(k)) { settings.set(k, false); say(OUT[k].name + ': off'); return; }
+            if (OUT[k].needsTool) {
+                const why = noTool();
+                if (why) { log.info(k + ': not turned on (' + why + ')'); say(OUT[k].name + ': ' + why, 5000); return; }
+            }
+            toast = null;
+            const was = Object.keys(OUT).filter((o) => o !== k && settings.get(o))[0];
             okKey = k;
             try { settings.set(k, true); } finally { okKey = ''; }
+            const name = k === 'cluster' ? 'Cluster ' + SCREEN_NAME[screen()] : 'HUD';
+            if (was) say(OUT[was].name + ' off - ' + name + ' on (one at a time, parked only)', 3500);
+            else if (k === 'cluster') say('Cluster: ' + SCREEN_NAME[screen()] + ' (parked only)');
+            else say('HUD: on (parked only)');
         }
-        function endHudTest(why) {
-            hud.stop();
-            log.info('hudtest: off (' + why + ')');
-            settings.set('hudtest', false);
-            say('HUD test: ended (' + why + ')');
-        }
-        /** The panel test(s) off now: the layer first. */
-        function endPanelTests(why) {
-            ['paneltest', 'sidetest'].forEach((k) => {
-                if (!settings.get(k)) return;
-                panel.stop();
-                log.info(k + ': off (' + why + ')');
-                settings.set(k, false);
-                say(OUT[k].name + ': ended (' + why + ')');
-            });
+        /** Cluster on / off and where: the map area's connection, or the panel's at Full / Left / Right. */
+        function applyCluster() {
+            const on = !!settings.get('cluster'), s = screen();
+            if (s !== 'centre') panel.place(s);
+            cluster.enable(on && s === 'centre');
+            panel.enable(on && s !== 'centre');
         }
         settings.onChange((key, value) => {
-            if (!OUT[key]) return;
-            if (key === 'sidetest' && value && !panelRan) {
-                asks[key] = 0; say(SIDE_FIRST);
-                log.info('sidetest: refused (the full cluster test has not run this session)');
-                settings.set(key, false);
+            if (key === 'clusterScreen') {
+                if (settings.get('cluster')) { cluster.stop(); panel.stop(); say('Cluster: ' + SCREEN_NAME[screen()]); }
+                applyCluster();
+                log.info('cluster screen: ' + screen());
+                labels();
                 return;
             }
-            if (value && okKey !== key) {
-                if (Date.now() - asks[key] > ASK_MS) {
-                    askOut(key);
-                    log.info(key + ': asked to confirm (one tap in the settings)');
-                    settings.set(key, false);                 // undone: the listeners see off again
-                    return;
-                }
-                asks[key] = 0; toast = null;                   // the second tap within ASK_MS
-            }
+            if (!OUT[key]) return;
             if (value) {
                 Object.keys(OUT).forEach((k) => {
-                    if (k !== key && settings.get(k)) { log.info(k + ': off (' + key + ' turned on; one at a time)'); settings.set(k, false); }
+                    if (k !== key && settings.get(k)) {
+                        log.info(k + ': off (' + key + ' turned on; one at a time)');
+                        settings.set(k, false);
+                        say(OUT[k].name + ' off - ' + OUT[key].name + ' on (one at a time)');
+                    }
                 });
             }
-            if (key === 'cluster') cluster.enable(!!value);
-            else if (key === 'paneltest' || key === 'sidetest') {
-                if (value) panelTestAt = Date.now();
-                if (!value) panel.stop();
-                panel.enable(!!(settings.get('paneltest') || settings.get('sidetest')));
+            if (key === 'cluster') {
+                if (!value) { cluster.stop(); panel.stop(); }
+                applyCluster();
             } else {
-                if (key === 'hudtest') hudTestAt = value ? Date.now() : 0;
                 if (!value) hud.stop();
-                hud.enable(!!(settings.get('hud') || settings.get('hudtest')));
+                hud.enable(!!settings.get('hud'));
             }
             log.info(key + ': ' + (value ? 'on' : 'off'));
             labels();
         });
-        cluster.enable(!!settings.get('cluster'));
+        applyCluster();
+        hud.enable(!!settings.get('hud'));                    // 0.4.2: kept across restarts, as Cluster's
         const clusterText = (s) => (/^Cluster /.test(s.text) ? s.text : 'Cluster: ' + s.text);
         function outStatus(playing) {
-            if (settings.get('cluster')) { const cs = cluster.status(gateOpen, playing); return { level: cs.level, text: clusterText(cs) }; }
-            if (settings.get('hud')) { const hs = hud.status(gateOpen, playing); return { level: hs.level, text: 'Play in HUD: ' + hs.text }; }
-            if (settings.get('hudtest')) {
-                const left = Math.max(0, Math.ceil((HUD_TEST_MS - (Date.now() - hudTestAt)) / 1000));
-                const hs = hud.status(gateOpen, true);
-                return { level: hs.level, text: 'HUD test (' + left + ' s): ' + hs.text };
-            }
-            const pk = panelKey();
-            if (pk) {
-                const left = Math.max(0, Math.ceil((HUD_TEST_MS - (Date.now() - panelTestAt)) / 1000));
-                const ps = panel.status(gateOpen, true);
-                return { level: ps.level, text: OUT[pk].name + ' (' + left + ' s): ' + ps.text };
-            }
+            if (settings.get('cluster')) { const cs = clOut().status(gateOpen, playing); return { level: cs.level, text: clusterText(cs) }; }
+            if (settings.get('hud')) { const hs = hud.status(gateOpen, playing); return { level: hs.level, text: 'HUD: ' + hs.text }; }
             return null;
         }
         const outLine = () => { const o = outStatus(gateOpen && want && !player.paused && player.state === 'playing'); return o ? o.text : ''; };
@@ -699,16 +686,6 @@ mgu.run({
         let clusterShown = '';
         setInterval(() => {
             gateStep();
-            if (settings.get('hudtest')) {
-                if (Date.now() - hudTestAt >= HUD_TEST_MS) endHudTest(Math.round(HUD_TEST_MS / 1000) + ' s up');
-                else if (gateOpen && gate().ok && visible()) hud.card();   // once; the card stays until stopped
-            }
-            const pk = panelKey();
-            if (pk) {
-                if (Date.now() - panelTestAt >= HUD_TEST_MS) endPanelTests(Math.round(HUD_TEST_MS / 1000) + ' s up');
-                else if (gateOpen && gate().ok && visible()) { if (panel.card(pk === 'paneltest' ? 'full' : 'sides') && pk === 'paneltest') panelRan = true; }
-                else panel.stop();
-            }
             // the warm state: at most WARM_MS paused, not while memory is tight, at most WARM_BYTES of samples
             if (player.v && player.paused && warmAt) {
                 if (Date.now() - warmAt > WARM_MS) dropWarm(Math.round(WARM_MS / 60000) + ' min paused');
@@ -1042,9 +1019,20 @@ mgu.run({
                     if (isPlay) { cv.fillRect(px - 11, py - 13, 8, 26, gc); cv.fillRect(px + 3, py - 13, 8, 26, gc); }
                     else tri(cv, [[px - 10, py - 14], [px + 14, py], [px - 10, py + 14]], gc);
                 }],
-                ['cluster', asking('cluster') ? 'Tap again' : settings.get('cluster') ? 'Cluster on' : 'Cluster', () => toggleOut('cluster'), (px, py) => {
-                    const c = settings.get('cluster') ? (t.sel || t.accent) : asking('cluster') ? '#ffcc33' : t.text;
-                    cv.strokeRoundRect(px - 24, py - 11, 48, 22, 11, 3, c); cv.circle(px - 12, py, 4, c); cv.circle(px + 12, py, 4, c);
+                // 0.4.2: the label names the Cluster screen when it isn't the centre; the glyph shows where it plays
+                ['cluster', (settings.get('cluster') ? (screen() === 'centre' ? 'Cluster on' : SCREEN_NAME[screen()] + ' on') : screen() === 'centre' ? 'Cluster' : 'Cluster ' + SCREEN_NAME[screen()]), () => toggleOut('cluster'), (px, py) => {
+                    const c = settings.get('cluster') ? (t.sel || t.accent) : t.text, s = screen();
+                    cv.strokeRoundRect(px - 24, py - 11, 48, 22, 11, 3, c);
+                    if (s === 'centre') { cv.circle(px - 12, py, 4, c); cv.circle(px + 12, py, 4, c); }
+                    else if (s === 'full') cv.fillRect(px - 17, py - 5, 34, 10, c);
+                    else cv.fillRect(s === 'left' ? px - 18 : px + 6, py - 6, 12, 12, c);
+                }],
+                // 0.4.2: the HUD, like Cluster (one tap, on / off shown); the glyph: the windscreen with the HUD's box in it
+                ['hud', settings.get('hud') ? 'HUD on' : 'HUD', () => toggleOut('hud'), (px, py) => {
+                    const c = settings.get('hud') ? (t.sel || t.accent) : t.text;
+                    cv.line(px - 26, py + 11, px + 26, py + 11, 3, c); cv.line(px - 26, py + 11, px - 19, py - 12, 3, c);
+                    cv.line(px + 26, py + 11, px + 19, py - 12, 3, c); cv.line(px - 19, py - 12, px + 19, py - 12, 3, c);
+                    cv.strokeRoundRect(px - 9, py - 6, 18, 11, 3, 2, c);
                 }],
                 ['full', fs ? 'Exit fullscreen' : 'Fullscreen', () => enterFull(!fs), (px, py) => {
                     const c = t.text, a = 9, d = fs ? -1 : 1;
@@ -1423,17 +1411,17 @@ mgu.run({
                 null, ok ? { solid: on, fg: '#000000' } : { fg: t.dim });
         }
 
-        const SET_ROWS = [
-            ['mode', 'Pictures', (v) => MODE_NAME[v] || v],
-            ['maxFps', 'At most (GPU video)', (v) => v + ' fps'],
-            ['theme', 'Colours', (v) => THEME_NAME[v] || v],
-            ['renderer', 'Renderer', (v) => (v === 'software' ? 'Software (fallback)' : 'GPU')],
-            ['afterDrive', 'After driving (Spelunkr)', (v) => AFTER_NAME[v] || AFTER_NAME.resume],
-            ['cluster', 'Play in cluster (parked)', (v) => (v ? 'On' : 'Off')],
-            ['hudtest', 'HUD test (30 s, parked)', (v) => (v ? 'On' : 'Off')],
-            ['hud', 'Play in HUD (parked, experiment)', (v) => (v ? 'On' : 'Off')],
-            ['paneltest', 'Full cluster test (30 s, parked)', (v) => (v ? 'On' : 'Off')],
-            ['sidetest', 'Side panels test (30 s, parked)', (v) => (v ? 'On' : panelRan ? 'Off' : 'After the full test')],
+        const SCREEN_LONG = { centre: 'Centre (map area)', full: 'Full (whole cluster)', left: 'Left (left gauge)', right: 'Right (right gauge)' };
+        // 0.4.2: four settings in two groups, a column each: playback (left), the cluster (right)
+        const SET_COLS = [
+            ['Playback', [
+                ['maxFps', 'At most (GPU video)', (v) => v + ' fps'],
+                ['afterDrive', 'After driving (Spelunkr)', (v) => AFTER_NAME[v] || AFTER_NAME.resume],
+            ]],
+            ['Cluster (parked)', [
+                ['cluster', 'Play in cluster (parked)', (v) => (v ? 'On' : 'Off')],
+                ['clusterScreen', 'Cluster screen', (v) => SCREEN_LONG[v] || SCREEN_LONG.centre],
+            ]],
         ];
         function drawSettings(cv, t, A) {
             const on = t.accent2 || t.accent, hy = A.y, cyH = hy + HEAD_H / 2;
@@ -1454,8 +1442,8 @@ mgu.run({
                 ['Video', inf.w ? 'H.264 ' + (inf.profile === 100 ? 'High' : inf.profile === 77 ? 'Main' : 'profile ' + inf.profile) + ', ' + inf.w + 'x' + inf.h + ', ' + inf.srcFps.toFixed(2) + ' fps' : '-'],
                 ['Decoder', inf.decMs ? 'WebAssembly, ' + inf.decMs.toFixed(1) + ' ms a picture' + (inf.light ? ' (light)' : '') : 'WebAssembly (FFmpeg H.264)'],
                 ['Output', pathName()],
-                ['Cluster', settings.get('cluster') ? cluster.status(gateOpen, gateOpen && player.state === 'playing').text : 'Off (Play in cluster)'],
-                ['HUD', settings.get('hud') || settings.get('hudtest') || panelKey() ? outLine() : 'Off (HUD test, Play in HUD, panel tests)'],
+                ['Cluster', settings.get('cluster') ? SCREEN_NAME[screen()] + ': ' + clOut().status(gateOpen, gateOpen && player.state === 'playing').text : 'Off (' + SCREEN_NAME[screen()] + ', Cluster button)'],
+                ['HUD', settings.get('hud') ? hud.status(gateOpen, gateOpen && player.state === 'playing').text : 'Off (HUD button)'],
                 ['Sound', 'None yet: no verified way for an app to play audio'],
                 ['Sources', 'Spelunkr: the Internet Archive, no DRM. Mine: ' + store.list().length + ' of ' + Src.MAX_SOURCES],
             ];
@@ -1465,17 +1453,19 @@ mgu.run({
                 cv.text(fit(cv, l[1], 22, colW - 150), A.x + 150, y, 22, l[0] === 'Sound' ? on : t.text, { literal: true });
                 y += 46;
             });
-            lbl('Settings', rx, top + 20);
-            // two columns of rows (0.4.1: ten settings)
-            const cols = 2, per = Math.ceil(SET_ROWS.length / cols), cg = 12, cw = (colW - cg) / cols;
-            const rgap = 10, rh = Math.min(96, (A.bottom - (top + 36) - (per - 1) * rgap) / per);
-            SET_ROWS.forEach((r, i) => {
-                const cx = rx + Math.floor(i / per) * (cw + cg), yy = top + 36 + (i % per) * (rh + rgap), key = 'set:' + r[0];
+            // two columns, a group each (the group's name over its rows), rows of one height, from the top
+            const cg = 12, cw = (colW - cg) / 2, per = 2, rgap = 10;
+            const rh = Math.min(96, (A.bottom - (top + 36) - (per - 1) * rgap) / per);
+            const rows = [];
+            SET_COLS.forEach((g, ci) => {
+                lbl(g[0], rx + ci * (cw + cg), top + 20);
+                g[1].forEach((r, i) => rows.push({ r, cx: rx + ci * (cw + cg), yy: top + 36 + i * (rh + rgap) }));
+            });
+            rows.forEach((o) => {
+                const r = o.r, cx = o.cx, yy = o.yy, key = 'set:' + r[0];
                 plate(cv, t, cx, yy, cw, rh, false, isDown(key));
                 cv.text(fit(cv, r[1].toUpperCase(), 14, cw - 32, { font: 'bold', spacing: 1.2 }), cx + 16, yy + rh / 2 - 6, 14, t.dim, { font: 'bold', spacing: 1.2, literal: true });
-                const ask = !!OUT[r[0]] && asking(r[0]);
-                const off = r[0] === 'sidetest' && !panelRan && !settings.get(r[0]);
-                cv.text(fit(cv, ask ? 'Tap again to turn on' : r[2](settings.get(r[0])), 22, cw - 32, { font: 'bold' }), cx + 16, yy + rh / 2 + 20, 22, ask ? '#ffcc33' : off ? t.dim : t.text, { font: 'bold', literal: true });
+                cv.text(fit(cv, r[2](settings.get(r[0])), 22, cw - 32, { font: 'bold' }), cx + 16, yy + rh / 2 + 20, 22, t.text, { font: 'bold', literal: true });
                 FS.button(cv, key, cx, yy, cw, rh, () => { downKey = key; downAt = Date.now(); if (OUT[r[0]]) toggleOut(r[0]); else settings.cycle(r[0]); }, { slop: 4, r: 14 });
             });
         }

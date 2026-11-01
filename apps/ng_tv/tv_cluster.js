@@ -9,7 +9,7 @@
  *
  * What goes there: one "video" layer on the "map" target only (slot 0x100, 1088x480, the area between the
  * dials), class "content" at z 100 (above the CarPlay map of waze-on-cluster, content at z 0, however
- * old either layer is), never "alert", never video on the "panel" target (see 0.4.1 below). It covers the whole map area
+ * old either layer is), never "alert" (0.4.2: or video on the "panel" target, see below). It covers the whole map area
  * and is "exclusive": while it is drawn the service suspends (does not remove) the layers below it on the
  * map, so the picture replaces the CarPlay map instead of sitting on it; the suspended layers write
  * nothing to the display and come back in the flush ours goes. A drawn layer is one with a frame within
@@ -41,9 +41,8 @@
  * handles it, and shown in the status line. 0.2.1 sends none: the status is as before. Nothing here acts
  * on it: the service does the asking again, and the layer, its class, z and stall_ms stay as they are.
  *
- * 0.3.0, the HUD (an experiment, parked only, see main.js): the same class with target "hud" (slot 0x323,
- * 800x480, a separate connection) draws either a still test card (an "image" layer: 200x120 RGBA, 96 KB
- * sent once, doubled twice by the HUD's GPU with nearest sampling) or the same video as on the map, in a
+ * 0.3.0, the HUD (parked only, see main.js; 0.4.2: the HUD button, the HUD test card gone): the same class
+ * with target "hud" (slot 0x323, 800x480, a separate connection) draws the same video as on the map, in a
  * 400x240 frame doubled to 800x480 (4:3: 320x240, shown 640x480; 16:9: 400x224, shown 800x448), black
  * around. Class "content", z 100, contend (asks again after the stock HMI took the slot; the service's
  * default hud_take_over_stock = 0 never unmaps the stock HUD content, so behind it ours is only parked),
@@ -51,15 +50,19 @@
  * it cannot cover the HUD's own content (that is a different mapping in the slot, the KOMBI's queue
  * decides), and our layer is opaque over the whole target anyway. Never "alert".
  *
- * 0.4.1, the panel test (an experiment, parked only, see main.js; unproven on the car): target "panel"
- * (slot 0x203, 1920x720, the whole cluster, over the gauges), which shares the HUD's scene id, so the two
- * exclude each other. Only ever a still test card, never video: one "image" layer exactly like the HUD
- * test card's (class "content", z 100, NOT exclusive, contend, nearest sampling), 480x180 RGBA (338 KB sent
- * once) drawn 4x by the cluster's GPU. Two cards: "full" (opaque, the whole panel: a 1-px border at the
- * very edge, TL / TR / BL / BR corner marks, coordinate ticks in panel px, a coarse grid, seven colour
- * bars, "G'S TV PANEL TEST · PARKED ONLY") and "sides" (the left and right thirds only, open line work
- * over a transparent background and a transparent centre third: whether the stock gauges stay visible
- * under our layer).
+ * 0.4.2, the cluster screens ("Cluster screen" in main.js; the panel tests of 0.4.1 proved on the car that
+ * the "panel" target covers the whole 1920x720 cluster and that what a layer leaves out stays see-through,
+ * so the test cards are gone): target "panel" (slot 0x203, over the gauges; it shares the HUD's scene id, so
+ * the two exclude each other) with video, as places of the same connection:
+ *   full:  the whole panel, a 640x240 frame tripled to 1920x720, the picture fitted at its aspect, black
+ *          around (opaque over the gauges): 4:3 320x240 shown 960x720 at x 480; 16:9 426x240 shown 1278x720
+ *   left:  the left third (x 0-640), a frame of the picture's own size within 320x360, doubled: 4:3 320x240
+ *          shown 640x480 at 0,120; 16:9 320x180 shown 640x360 at 0,180. The layer is only the picture, so the
+ *          letterbox bars and the rest of the cluster stay see-through (the stock gauges show)
+ *   right: the same in the right third (x 1280-1920)
+ * Class "content", z 100, NOT exclusive, contend, stall 1000, at most 15 a second: about 1.7 MB/s (4:3) to
+ * 2.3 MB/s (16:9 full) worst case, inside the service's shared 6000 KB/s with Waze's map; fewer a second
+ * when the service reports a lower upload cap. Never "alert", never another slot.
  *
  * Never throws into the player, never blocks. Node 8: no ?., ?? or object spread.
  */
@@ -72,14 +75,19 @@ const TESTING = !!(process.env.NG_CR_CLIENT || process.env.NG_CR_SOCK);
 
 const TARGET = 'map';                     // the cluster's map area (the default target)
 const MAP_W = 1088, MAP_H = 480;          // the map target's size
-/* The targets G's TV may use: size, z and whether the layer is exclusive (see above). panel: cards only. */
+/*
+ * The places G's TV may use (see above): name: the service's target (its size W x H), the area x, y, w, h on
+ * it, k: the cluster's GPU scales the frame k times (the frame at most w/k x h/k), fit: the layer is the
+ * picture only (the rest see-through) instead of the whole area with black around, exclusive.
+ */
 const TARGETS = {
-    map: { name: 'map', W: MAP_W, H: MAP_H, exclusive: true, tag: 'cluster', area: 'the map area' },
-    hud: { name: 'hud', W: 800, H: 480, exclusive: false, tag: 'hud', area: 'the HUD' },
-    panel: { name: 'panel', W: 1920, H: 720, exclusive: false, tag: 'panel', area: 'the whole cluster', cardsOnly: true },
+    map: { key: 'map', name: 'map', W: MAP_W, H: MAP_H, x: 0, y: 0, w: MAP_W, h: MAP_H, k: 2, exclusive: true, tag: 'cluster', area: 'the map area' },
+    hud: { key: 'hud', name: 'hud', W: 800, H: 480, x: 0, y: 0, w: 800, h: 480, k: 2, exclusive: false, tag: 'hud', area: 'the HUD' },
+    full: { key: 'full', name: 'panel', W: 1920, H: 720, x: 0, y: 0, w: 1920, h: 720, k: 3, exclusive: false, tag: 'panel', area: 'the whole cluster' },
+    left: { key: 'left', name: 'panel', W: 1920, H: 720, x: 0, y: 0, w: 640, h: 720, k: 2, fit: true, exclusive: false, tag: 'panel', area: 'the left of the cluster' },
+    right: { key: 'right', name: 'panel', W: 1920, H: 720, x: 1280, y: 0, w: 640, h: 720, k: 2, fit: true, exclusive: false, tag: 'panel', area: 'the right of the cluster' },
 };
-const CARD_W = 200, CARD_H = 120;         // the HUD test card, drawn 4x (800x480) by the HUD's GPU
-const PANEL_CW = 480, PANEL_CH = 180;     // the panel test cards, drawn 4x (1920x720) by the cluster's GPU
+TARGETS.panel = TARGETS.full;             // target 'panel': the whole panel
 const AREA = { x: 0, y: 0, w: MAP_W, h: MAP_H };  // the layer: the whole map area
 const FRAME_W = MAP_W / 2, FRAME_H = MAP_H / 2;   // 544x240, doubled on the cluster's GPU
 const FPS = 15;                           // at most, while the upload cap is at its ceiling
@@ -100,156 +108,29 @@ for (let i = 0; i < 256; i++) {
 }
 
 /**
- * For a w x h picture: the layer (x, y, w, h: the whole map area), its frame (vw x vh, 544x240), the
- * picture in the frame (pw x ph at px, py: the largest that fits at the picture's aspect, even sizes and
- * places for the 4:2:0 chroma, centred) and where that shows on the map (sx, sy, sw, sh).
+ * For a w x h picture at a place (TARGETS' key): the layer (x, y, w, h on the target), its frame (vw x vh),
+ * the picture in the frame (pw x ph at px, py: the largest that fits the area at the picture's aspect, even
+ * sizes and places for the 4:2:0 chroma, centred: letterboxed) and where that shows (sx, sy, sw, sh). The
+ * layer is the whole area (black around the picture), or with fit the picture alone (nothing around it).
  */
 function geometry(w, h, target) {
-    const T = TARGETS[target] || TARGETS.map;
-    const AREA = { x: 0, y: 0, w: T.W, h: T.H }, FRAME_W = T.W / 2, FRAME_H = T.H / 2;
+    const T = TARGETS[target] || TARGETS.map, k = T.k;
+    const FRAME_W = Math.floor(T.w / k) & ~1, FRAME_H = Math.floor(T.h / k) & ~1;
     const asp = w / h;
     let pw = Math.round(FRAME_H * asp), ph = FRAME_H;
     if (pw > FRAME_W) { pw = FRAME_W; ph = Math.round(FRAME_W / asp); }
     pw = Math.max(2, pw & ~1); ph = Math.max(2, ph & ~1);
     const px = ((FRAME_W - pw) >> 1) & ~1, py = ((FRAME_H - ph) >> 1) & ~1;
-    const kx = AREA.w / FRAME_W, ky = AREA.h / FRAME_H;
-    return { vw: FRAME_W, vh: FRAME_H, x: AREA.x, y: AREA.y, w: AREA.w, h: AREA.h, pw, ph, px, py,
-        sx: AREA.x + px * kx, sy: AREA.y + py * ky, sw: pw * kx, sh: ph * ky };
+    const sx = T.x + Math.round((T.w - pw * k) / 2), sy = T.y + Math.round((T.h - ph * k) / 2);
+    if (T.fit) return { vw: pw, vh: ph, x: sx, y: sy, w: pw * k, h: ph * k, pw, ph, px: 0, py: 0, sx, sy, sw: pw * k, sh: ph * k };
+    return { vw: FRAME_W, vh: FRAME_H, x: T.x, y: T.y, w: T.w, h: T.h, pw, ph, px, py,
+        sx: T.x + px * k, sy: T.y + py * k, sw: pw * k, sh: ph * k };
 }
 
 /** A vw x vh atlas, black (full-range Y 0, neutral chroma) everywhere. */
 function blackAtlas(vw, vh) {
     const b = Buffer.alloc(vw * vh * 3 / 2);
     b.fill(128, vw * vh);
-    return b;
-}
-
-/* A 5x7 font for the test card's few letters. */
-const GLYPHS = {
-    'A': '01110100011000111111100011000110001', 'D': '11110100011000110001100011000111110',
-    'E': '11111100001000011110100001000011111', 'G': '01110100011000010111100011000101111',
-    'H': '10001100011000111111100011000110001', 'K': '10001100101010011000101001001010001',
-    'L': '10000100001000010000100001000011111', 'N': '10001110011010110011100011000110001',
-    'O': '01110100011000110001100011000101110', 'P': '11110100011000111110100001000010000',
-    'R': '11110100011000111110101001001010001', 'S': '01111100001000001110000010000111110',
-    'T': '11111001000010000100001000010000100', 'U': '10001100011000110001100011000101110',
-    'V': '10001100011000110001100010101000100', 'Y': '10001100010101000100001000010000100',
-    "'": '00100001000100000000000000000000000', ' ': '00000000000000000000000000000000000',
-    // 0.4.1, for the panel cards
-    'B': '11110100011000111110100011000111110', 'C': '01110100011000010000100001000101110',
-    'F': '11111100001000011110100001000010000', 'I': '01110001000010000100001000010001110',
-    'M': '10001110111010110101100011000110001', 'X': '10001100010101000100010101000110001',
-    'W': '10001100011000110101101011010101010',
-    '0': '01110100011001110101110011000101110', '1': '00100011000010000100001000010001110',
-    '2': '01110100010000100010001000100011111', '3': '11111000100010000010000011000101110',
-    '4': '00010001100101010010111110001000010', '5': '11111100001111000001000011000101110',
-    '6': '00110010001000011110100011000101110', '7': '11111000010001000100010000100001000',
-    '8': '01110100011000101110100011000101110', '9': '01110100011000101111000010001001100',
-    '\u00b7': '00000000000111001110011100000000000', '/': '00001000100001000100010000100010000',
-    '-': '00000000000000011111000000000000000',
-};
-/** A W x H RGBA raster (straight alpha, all transparent) with the few drawing calls the cards use. */
-function raster(W, H) {
-    const b = Buffer.alloc(W * H * 4);
-    const px = (x, y, c) => { if (x < 0 || y < 0 || x >= W || y >= H) return; const o = (y * W + x) * 4; b[o] = c[0]; b[o + 1] = c[1]; b[o + 2] = c[2]; b[o + 3] = c.length > 3 ? c[3] : 255; };
-    const rect = (x, y, w, h, c) => { for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) px(i, j, c); };
-    const textW = (s, k) => (s.length * 6 - 1) * k;
-    /** s at x, y (align: 'left' | 'center' | 'right' about x), k: the glyph scale */
-    const text = (s, x, y, k, c, align) => {
-        const x0 = align === 'center' ? Math.round(x - textW(s, k) / 2) : align === 'right' ? x - textW(s, k) : x;
-        for (let n = 0; n < s.length; n++) {
-            const g = GLYPHS[s[n]] || GLYPHS[' '];
-            for (let r = 0; r < 7; r++) for (let q = 0; q < 5; q++) if (g[r * 5 + q] === '1') rect(x0 + (n * 6 + q) * k, y + r * k, k, k, c);
-        }
-    };
-    return { b, W, H, px, rect, text, textW };
-}
-const WHITE = [255, 255, 255], YELLOW = [255, 204, 0], GREY = [70, 70, 70], GREY2 = [120, 120, 120];
-const BARS = [[255, 255, 255], [255, 255, 0], [0, 255, 255], [0, 255, 0], [255, 0, 255], [255, 0, 0], [0, 0, 255]];
-/** Corner marks: an L of len card px at each corner, inset by d, and its TL / TR / BL / BR label. */
-function corners(R, x0, x1, len, d, labels) {
-    const { rect, text, H } = R, k = 2, th = 2;
-    const c = [[x0 + d, d, 1, 1, 'TL'], [x1 - d, d, -1, 1, 'TR'], [x0 + d, H - 1 - d, 1, -1, 'BL'], [x1 - d, H - 1 - d, -1, -1, 'BR']];
-    c.forEach((q) => {
-        if (labels.indexOf(q[4]) < 0) return;
-        const x = q[0], y = q[1], sx = q[2], sy = q[3];
-        rect(sx > 0 ? x : x - len + 1, sy > 0 ? y : y - th + 1, len, th, YELLOW);
-        rect(sx > 0 ? x : x - th + 1, sy > 0 ? y : y - len + 1, th, len, YELLOW);
-        const tx = sx > 0 ? x + 5 : x - 4, ty = sy > 0 ? y + 5 : y - 4 - 7 * k;
-        text(q[4], tx, ty, k, YELLOW, sx > 0 ? 'left' : 'right');
-    });
-}
-/**
- * The panel test cards, PANEL_CW x PANEL_CH RGBA (one card px = 4 panel px). kind 'full': opaque over the
- * whole panel; 'sides': the left and right thirds only, open line work, everything else transparent.
- */
-function panelCard(kind) {
-    const R = raster(PANEL_CW, PANEL_CH), W = R.W, H = R.H, S = 1920 / W;
-    const { rect, text } = R;
-    if (kind === 'sides') {
-        const third = W / 3;                              // 160: 640 panel px
-        [[0, third - 1, ['TL', 'BL'], 'LEFT'], [W - third, W - 1, ['TR', 'BR'], 'RIGHT']].forEach((z) => {
-            const a = z[0], e = z[1];
-            for (let x = a + 20; x < e; x += 20) for (let y = 0; y < H; y += 2) R.px(x, y, GREY2);      // a dotted grid
-            for (let y = 20; y < H; y += 20) for (let x = a; x <= e; x += 2) R.px(x, y, GREY2);
-            rect(a, 0, e - a + 1, 1, WHITE); rect(a, H - 1, e - a + 1, 1, WHITE);              // the third's outline
-            rect(a, 0, 1, H, WHITE); rect(e, 0, 1, H, WHITE);
-            corners(R, a, e, 12, 3, z[2]);
-            const bw = 14, bx = Math.round((a + e + 1) / 2 - bw * 3.5);
-            BARS.forEach((c, i) => rect(bx + i * bw, 26, bw, 8, c));                            // a thin bar strip
-            text(z[3], (a + e + 1) / 2, H / 2 - 7, 2, WHITE, 'center');
-            text('SIDE TEST', (a + e + 1) / 2, H / 2 + 12, 1, YELLOW, 'center');
-            text('X ' + (a * S) + '-' + ((e + 1) * S), (a + e + 1) / 2, H - 40, 1, WHITE, 'center');
-        });
-        return R.b;
-    }
-    rect(0, 0, W, H, [0, 0, 0]);
-    for (let x = 30; x < W; x += 30) rect(x, 1, 1, H - 2, x % 60 ? GREY : GREY2);                // the grid: 120 / 240 panel px
-    for (let y = 30; y < H; y += 30) rect(1, y, W - 2, 1, y % 60 ? GREY : GREY2);
-    // coordinate ticks in panel px: every 40 (short), every 160 (long, labelled)
-    for (let x = 10; x < W; x += 10) {
-        const L = x % 40 ? 3 : 7;
-        rect(x, 1, 1, L, WHITE); rect(x, H - 1 - L, 1, L, WHITE);
-        if (!(x % 40) && x > 60 && x < W - 60) { text(String(x * S), x, 10, 1, WHITE, 'center'); text(String(x * S), x, H - 18, 1, WHITE, 'center'); }
-    }
-    for (let y = 10; y < H; y += 10) {
-        const L = y % 40 ? 3 : 7;
-        rect(1, y, L, 1, WHITE); rect(W - 1 - L, y, L, 1, WHITE);
-        if (!(y % 40) && y > 20 && y < H - 30) { text(String(y * S), 10, y - 3, 1, WHITE, 'left'); text(String(y * S), W - 10, y - 3, 1, WHITE, 'right'); }
-    }
-    rect(0, 0, W, 1, WHITE); rect(0, H - 1, W, 1, WHITE); rect(0, 0, 1, H, WHITE); rect(W - 1, 0, 1, H, WHITE);   // the very edge
-    corners(R, 0, W - 1, 14, 3, ['TL', 'TR', 'BL', 'BR']);
-    text("G'S TV PANEL TEST \u00b7 PARKED ONLY", W / 2, 36, 2, WHITE, 'center');
-    const bw = 44, bx = (W - bw * BARS.length) >> 1;
-    BARS.forEach((c, i) => rect(bx + i * bw, 64, bw, 44, c));
-    rect(W / 2, 112, 1, 8, WHITE); rect(W / 2 - 4, 116, 9, 1, WHITE);                             // the centre
-    text('1920X720 \u00b7 CARD 480X180 X4 \u00b7 TICKS IN PANEL PX', W / 2, 126, 1, YELLOW, 'center');
-    return R.b;
-}
-/**
- * The HUD test card: CARD_W x CARD_H RGBA (straight alpha, all opaque), high contrast: black, a white
- * border, "G'S TV" / "HUD TEST" in white, seven colour bars and "PARKED ONLY" in yellow.
- */
-function testCard() {
-    const W = CARD_W, H = CARD_H, b = Buffer.alloc(W * H * 4);
-    const px = (x, y, c) => { if (x < 0 || y < 0 || x >= W || y >= H) return; const o = (y * W + x) * 4; b[o] = c[0]; b[o + 1] = c[1]; b[o + 2] = c[2]; b[o + 3] = 255; };
-    const rect = (x, y, w, h, c) => { for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) px(i, j, c); };
-    const text = (s, y, k, c) => {
-        const x0 = Math.round((W - (s.length * 6 - 1) * k) / 2);
-        for (let n = 0; n < s.length; n++) {
-            const g = GLYPHS[s[n]] || GLYPHS[' '];
-            for (let r = 0; r < 7; r++) for (let q = 0; q < 5; q++) if (g[r * 5 + q] === '1') rect(x0 + (n * 6 + q) * k, y + r * k, k, k, c);
-        }
-    };
-    rect(0, 0, W, H, [0, 0, 0]);
-    rect(0, 0, W, 3, [255, 255, 255]); rect(0, H - 3, W, 3, [255, 255, 255]);
-    rect(0, 0, 3, H, [255, 255, 255]); rect(W - 3, 0, 3, H, [255, 255, 255]);
-    text("G'S TV", 10, 3, [255, 255, 255]);
-    text('HUD TEST', 36, 2, [255, 255, 255]);
-    const bars = [[255, 255, 255], [255, 255, 0], [0, 255, 255], [0, 255, 0], [255, 0, 255], [255, 0, 0], [0, 0, 255]];
-    const bw = Math.floor((W - 20) / bars.length), bx = (W - bw * bars.length) >> 1;
-    bars.forEach((c, i) => rect(bx + i * bw, 58, bw, 36, c));
-    text('PARKED ONLY', 100, 1, [255, 204, 0]);
     return b;
 }
 
@@ -289,6 +170,17 @@ function mapsFor(sw, sh, vw, vh) {
 }
 
 /** The frame rate for an upload cap (KB/s) against its ceiling: 15 at the ceiling, then 10, then 5. */
+/**
+ * The panel's places (Full / Left / Right) keep the picture's own bytes to about 2.3 MB/s, so with Waze's map
+ * on the same link (the service's 6000 KB/s) there is room: a wide film (2.4:1 on Full, 576x240) at 11 a
+ * second rather than 15. The map and the HUD as before.
+ */
+const PANEL_BPS = 2.32e6;                 // 16:9 on Full: 426x240 x 1.5 x 15 = 2.30 MB/s
+function picFps(g, T) {
+    if (!g || !T || T.name !== 'panel') return FPS;
+    return Math.max(5, Math.min(FPS, Math.floor(PANEL_BPS / (g.pw * g.ph * 1.5))));
+}
+
 function fpsForBudget(cap, max) {
     if (!(cap > 0) || !(max > 0) || cap >= max) return FPS;
     return cap >= 4000 ? 10 : 5;
@@ -338,9 +230,9 @@ class ClusterOut {
         this.log = o.log || { info() {}, warn() {} };
         this.app = o.app || 'ng_tv';
         this.opts = o;
-        this.T = TARGETS[o.target] || TARGETS.map;    // never "panel"
+        this.T = TARGETS[o.target] || TARGETS.map;
         this.tag = this.T.tag;
-        this.kind = '';           // the layer: 'video' or 'image' (the HUD test card)
+        this.kind = '';           // the layer: 'video'
         this.now = o.now || Date.now;
         this.on = false;          // the toggle
         this.cr = null; this.err = null;
@@ -388,7 +280,7 @@ class ClusterOut {
         });
         // the target event's "rendering" (service 0.2.2), which the client's 'target' event leaves out
         let rendering = '';
-        const TN = this.T.name;
+        const TN = this.T.name;                       // place() keeps the target: the same connection
         const handle = cr._event;
         if (typeof handle === 'function') {
             cr._event = function (ev) {
@@ -422,30 +314,29 @@ class ClusterOut {
      * made with the first picture after a stop(). False when nothing was sent.
      */
     write(f) {
-        if (this.T.cardsOnly) return false;             // never video on the panel
         if (!this.on || !this.cr || !this.ready || !f || !f.yuv || f.w < 16 || f.h < 16 || (f.w & 1) || (f.h & 1)) return false;
         const now = this.now();
-        if (now - this.lastAt < 1000 / this.fps - 4) return false;
+        if (now - this.lastAt < 1000 / Math.min(this.fps, picFps(this.geo, this.T)) - 4) return false;
         try {
             const key = f.w + 'x' + f.h, T = this.T;
-            if (this.ref && this.kind !== 'video') this._drop();      // the test card goes first
+            if (this.ref && key !== this.key && T.fit) this._drop();  // fit: the layer is the picture, made again
             if (this.ref && key !== this.key) {
                 // a new picture size: the same layer and frame (always the whole map area), the picture
                 // placed again on black, so the map below is not let through for a moment
-                const g = geometry(f.w, f.h, T.name);
+                const g = geometry(f.w, f.h, T.key);
                 this.geo = g; this.key = key; this.maps = null;
                 this.atlas = blackAtlas(g.vw, g.vh);
                 this.log.info(this.tag + ': the picture ' + g.pw + 'x' + g.ph + ' shown ' + g.sw + 'x' + g.sh + ' at ' + g.sx + ',' + g.sy);
             }
             if (!this.ref) {
-                const g = geometry(f.w, f.h, T.name);
+                const g = geometry(f.w, f.h, T.key);
                 const ref = this.cr.video({ target: T.name, klass: 'content', z: Z, exclusive: T.exclusive, x: g.x, y: g.y, w: g.w, h: g.h,
                     vw: g.vw, vh: g.vh, fps: FPS, stall_ms: STALL_MS, contend: true });
                 if (!ref) { this.log.warn(this.tag + ': video layer refused by the client'); return false; }
                 this.ref = ref; this.geo = g; this.key = key; this.kind = 'video';
                 this.atlas = blackAtlas(g.vw, g.vh);
                 this.layerState = 'new'; this.layerReason = '';
-                this.log.info(this.tag + ': video layer ' + g.vw + 'x' + g.vh + ' over the whole ' + T.name + (T.exclusive ? ' (exclusive)' : '') + ', the picture ' + g.pw + 'x' + g.ph + ' shown ' + g.sw + 'x' + g.sh + ' at ' + g.sx + ',' + g.sy);
+                this.log.info(this.tag + ': video layer ' + g.vw + 'x' + g.vh + ' at ' + g.x + ',' + g.y + ' ' + g.w + 'x' + g.h + ' on ' + T.area + (T.exclusive ? ' (exclusive)' : '') + ', the picture ' + g.pw + 'x' + g.ph + ' shown ' + g.sw + 'x' + g.sh + ' at ' + g.sx + ',' + g.sy);
             }
             this.maps = toAtlas(f, this.geo.pw, this.geo.ph, this.atlas, this.maps, this.geo);
             if (!this.cr.frame(this.ref, this.atlas, ++this.id)) return false;
@@ -458,35 +349,22 @@ class ClusterOut {
     }
 
     /**
-     * The HUD test card (target "hud" only): one image layer over the whole HUD, sent once (the client
-     * sends it whole again after a reconnect). Idempotent; true while it is up. Only call while parked.
+     * The place on the same target (0.4.2: the panel's full / left / right): a layer up goes (the next
+     * picture makes it again at the new place). False for an unknown place or another target.
      */
-    card(kind) {
-        const TN = this.T.name;
-        if ((TN !== 'hud' && TN !== 'panel') || !this.on || !this.cr || !this.ready) return false;
-        const k = TN === 'panel' ? (kind === 'sides' ? 'sides' : 'full') : 'hud';
-        if (this.ref && this.kind === 'image' && this.cardKind === k) return true;
-        try {
-            if (this.ref) this._drop();
-            const iw = TN === 'panel' ? PANEL_CW : CARD_W, ih = TN === 'panel' ? PANEL_CH : CARD_H;
-            // the same layer as the HUD test card's: content, z 100, not exclusive, contend
-            const ref = this.cr.image({ target: TN, klass: 'content', z: Z, exclusive: false, x: 0, y: 0, w: this.T.W, h: this.T.H,
-                iw, ih, sampling: 'nearest', contend: true });
-            if (!ref) { this.log.warn(this.tag + ': image layer refused by the client'); return false; }
-            this.ref = ref; this.kind = 'image'; this.cardKind = k; this.layerState = 'new'; this.layerReason = '';
-            this.cr.pixels(ref, null, TN === 'panel' ? panelCard(k) : testCard());
-            this.sent++;
-            this.log.info(this.tag + ': test card ' + (TN === 'panel' ? '"' + k + '" ' : '') + iw + 'x' + ih + ' over ' + this.T.area + ' (' + this.T.W + 'x' + this.T.H + ')');
-            return true;
-        } catch (e) {
-            this.log.warn(this.tag + ': test card ' + e.message);
-            return false;
-        }
+    place(key) {
+        const T = TARGETS[key];
+        if (!T || T.name !== this.T.name) return false;
+        if (T === this.T) return true;
+        this._drop();
+        this.T = T;
+        this.log.info(this.tag + ': place ' + T.key + ' (' + T.area + ')');
+        return true;
     }
 
     _drop() {
         const ref = this.ref;
-        this.ref = 0; this.kind = ''; this.cardKind = ''; this.key = ''; this.geo = null; this.layerState = ''; this.layerReason = ''; this.lastAt = -1e15;
+        this.ref = 0; this.kind = ''; this.key = ''; this.geo = null; this.layerState = ''; this.layerReason = ''; this.lastAt = -1e15;
         if (ref && this.cr) { try { this.cr.drop(ref); } catch (e) { /* gone */ } }
     }
 
@@ -566,16 +444,15 @@ class ClusterOut {
         const svc = ' [' + (P ? 'PANEL' : 'HUD') + ': ' + this.service() + ']';
         if (!parked) return { level: 'info', text: 'Ready - only when parked' + svc };
         if (!this.ref) return { level: 'info', text: (playing ? 'Starting...' : 'Ready - press Play') + svc };
-        const t = this.target, ls = this.layerState, what = this.kind === 'image' ? 'Test card' : 'Playing';
+        const t = this.target, ls = this.layerState;
         if (this.refused && ls !== 'shown') return { level: 'bad', text: 'Refused (' + this.refused + ')' + svc };
         if (ls === 'error') return { level: 'bad', text: 'Refused by the renderer' + (this.layerReason ? ' (' + this.layerReason + ')' : '') + svc };
         if (t.state === 'unavailable') return { level: 'bad', text: NM + ' unavailable' + svc };
         if (ls === 'shown' || t.state === 'shown') {
             const g = this.geo;
-            const on = P ? ' on the whole cluster' : ' on the HUD';
-            const detail = this.kind === 'image' ? on : on + (g ? ' - ' + g.sw + 'x' + g.sh : '') + ' ' + this.fps + ' fps';
+            const detail = ' on ' + this.T.area + (g ? ' - ' + g.sw + 'x' + g.sh : '') + ' ' + Math.min(this.fps, picFps(g, this.T)) + ' fps';
             const level = t.rendering === 'checking' ? 'warn' : 'ok';
-            return { level, text: what + detail + svc };
+            return { level, text: 'Playing' + detail + svc };
         }
         if (/scene id/.test(t.reason)) return { level: 'warn', text: P ? 'Panel busy - another app uses the HUD (it shares the panel\'s scene)' + svc : 'HUD busy - another app uses the cluster panel (it shares the HUD\'s scene)' + svc };
         if (t.state === 'parked' || t.state === 'waiting') return { level: 'warn', text: (P ? 'Panel busy - the car\'s own cluster content is in front' : 'HUD busy - the car\'s own HUD content is in front') + svc };
@@ -585,4 +462,4 @@ class ClusterOut {
     }
 }
 
-module.exports = { ClusterOut, loadClient, toAtlas, blackAtlas, geometry, fpsForBudget, trusted, testCard, panelCard, TARGET, TARGETS, AREA, FPS, STALL_MS, Z, EXCLUSIVE, CARD_W, CARD_H, PANEL_CW, PANEL_CH, GLYPHS };
+module.exports = { ClusterOut, loadClient, toAtlas, blackAtlas, geometry, fpsForBudget, picFps, PANEL_BPS, trusted, TARGET, TARGETS, AREA, FPS, STALL_MS, Z, EXCLUSIVE };
