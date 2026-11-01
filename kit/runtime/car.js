@@ -5,6 +5,7 @@
  *   const car = new Car(ctx, ['rpm', 'speed', 'accel', 'temps', 'gear', 'torque'], { demo: false });
  *   car.data()      -> { rpm, speed, gLong, gLat, coolant, oil, gear, torque, driveMode, tyres, demo }
  *   car.onSample(fn)-> fn(data, tMs) on every new speed/rpm/accel sample (also in demo, 20 Hz)
+ *   car.at          -> { field: Date.now() ms } when the car last sent each live field (never demo)
  *   opts.demo false: car data only, never the demo feed (the "demo" setting is not read)
  *
  * Scalings are BMW's own (M Laptimer TypeConverters); an app's app.json
@@ -136,6 +137,7 @@ class Car {
         const over = (ctx.spec.config && ctx.spec.config.scaling) || {};
         this.S = Object.assign({}, SCALE, over);
         this.live = {}; this.lastCar = 0; this.listeners = [];
+        this.at = {};                                        // field -> when the car last sent it (Date.now() ms)
         this.modeDiag = {}; this.subBy = {}; this.tyreRaw = {}; this.units = { press: null, temp: null, psiSeen: false };    // drivemode group: field -> latest raw (car only); iface -> its subscription
         this.sim = new Sim(); this.simData = this.sim.sample();
         this.demoActive = false; this.guess = new GearGuess();
@@ -146,7 +148,7 @@ class Car {
         };
         const put = (k, v, tick) => {
             if (v === null || v === undefined || (typeof v === 'number' && !isFinite(v))) return;
-            this.live[k] = v; this.lastCar = Date.now();
+            this.live[k] = v; this.lastCar = Date.now(); this.at[k] = this.lastCar;
             // learned gear while driving; nothing at a standstill - the guess can't tell P, N or D
             // there, and "N" shown in park or in D was wrong
             if (k === 'rpm' || k === 'speed') { const g = this.guess.feed(this.live.rpm, this.live.speed); if (g !== null || this.live.speed < 3) this.guessed = this.live.speed < 3 ? undefined : g; }

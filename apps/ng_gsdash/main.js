@@ -32,10 +32,12 @@
  *     instrument cluster (cluster.js), on / off, through the separately installed "Waze on cluster"
  *     tool's patch service: off unless the tool is installed and the user turns it on (with a
  *     confirmation); G's Dash stores nothing for it.
- *   - cluster skins (0.8.0, cluster_skin.js, setting "clusterSkin", on by default): parked in P / N with
- *     the cluster in its Sport layout, the cluster's own dials redrawn in the G's Dash look (the look
- *     switches the skin; Stock, the stock dials redrawn, from diagnostics), the telltales on top, back
- *     to stock at once when driving off or anything is wrong. Options > Refresh cluster drops and makes
+ *   - cluster skins (0.8.0, cluster_skin.js, setting "clusterSkin", on by default): with the cluster in
+ *     its Sport layout, the cluster's own dials redrawn in the G's Dash look (the look switches the skin;
+ *     Stock, the stock dials redrawn, from diagnostics), the telltales on top. 0.8.1: driving too - the
+ *     speedometer, tachometer, digital speed and gear live from every car sample (car.onSample, 30 Hz at
+ *     most); fuel, oil and the ACC / speed-limit / assist area left the car's own; back to stock when a
+ *     value is over 300 ms old while moving, or anything is wrong. Options > Refresh cluster drops and makes
  *     again every G's Dash layer in the cluster (the logo takes the map back from the stock map). On the
  *     diagnostics page, parked: the alignment card (a 1 px outline of the measured geometry) and the
  *     Stock redraw.
@@ -70,7 +72,7 @@ const lookOf = (id) => LOOKS.find((l) => l.id === id) || LOOKS[0];
 const MPH = 1.609344;
 const TRAIL_MS = 3000;
 const OIL_READY_F = 194, COOLANT_READY_F = 176, HYST_F = 4;
-const VERSION = '0.8.0';
+const VERSION = '0.8.1';
 // Warm-up: the rev limit is COLD_RPM at or below COLD_F oil, rising (250 rpm steps) to WARM_REDLINE at
 // the "oil temp for full revs" setting. Auto-jump: AUTO_MS after READY it opens Drive.
 const COLD_RPM = 4000, COLD_F = 104, WARM_REDLINE = 6000, OIL_FULL_F = 180, AUTO_MS = 5000;
@@ -179,7 +181,7 @@ mgu.run({
             pixel: (o) => CL.pixelImage(P, o),
         } });
         const logoOn = () => settings.get('clusterLogo') !== 'off';
-        // the cluster skins (cluster_skin.js, setting "clusterSkin"): parked, Sport layout, the look's;
+        // the cluster skins (cluster_skin.js, setting "clusterSkin"): Sport layout, parked and driving, the look's;
         // skinMode from the diagnostics page: 'skin', 'align' (the alignment card), 'stock' (the Stock redraw)
         const cskin = new CS.ClusterSkin({ log, app: 'ng_gsdash', load: (f) => PNG.decode(fs.readFileSync(path.join(__dirname, f))) });
         const skinOn = () => settings.get('clusterSkin') !== 'off';
@@ -190,8 +192,10 @@ mgu.run({
             clogo.update({ on: !!open && logoOn(), enabled: logoOn(), pixel: look().id === 'pixel', parked: L.isNum(d.speed) && d.speed < 1 });
             const sub = car.subBy ? car.subBy[SPEED_IFACE] : null;
             cskin.update({ on: !!open && (skinOn() || skinMode !== 'skin'), enabled: skinOn() || skinMode !== 'skin', look: look().id, mode: skinMode, data: d,
-                speedAvail: !!(sub && sub.available && !sub.error), fuel: fuel.state(), gear: L.gearText(d.gear, d.stage) });
+                speedAvail: !!(sub && sub.available && !sub.error), gear: L.gearText(d.gear, d.stage), at: car.at || null });
         };
+        // the skins' live path (0.8.1): every speed / rpm / accel sample straight on, not at the loop's 10 fps
+        car.onSample(() => { if (cskin.want) { const d = car.data(); cskin.sample(d, car.at || null, L.gearText(d.gear, d.stage)); } });
         /** Options > Refresh cluster: every G's Dash layer in the cluster dropped and made again */
         const refreshCluster = () => {
             const a = clogo.refresh(), b = cskin.refresh();
@@ -571,7 +575,7 @@ mgu.run({
             const tone = on ? logoTone(t, sv.kind) : null;
             cardOf(lk)(cv, t, x, y, w, h, false);
             const bw = 84, bx0 = x + w - 2 * bw - 12;
-            rowText(cv, S, lk, x + (tone ? 18 : 0), y, bx0 - x - 12 - (tone ? 18 : 0), h, 'Cluster skins (parked, Sport)', on ? sv.text : 'Off', { shrink: true });
+            rowText(cv, S, lk, x + (tone ? 18 : 0), y, bx0 - x - 12 - (tone ? 18 : 0), h, 'Cluster skins (Sport)', on ? sv.text : 'Off', { shrink: true });
             if (tone) cv.circle(x + 22, y + h - 20, 6, tone);
             [[false, 'Off', 'off'], [true, 'On', 'on']].forEach((b, i) => {
                 const bx = bx0 + i * (bw + 6), sel = on === b[0], by = y + 10, bh = h - 20;

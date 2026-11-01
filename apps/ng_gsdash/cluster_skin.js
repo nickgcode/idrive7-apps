@@ -1,12 +1,21 @@
 'use strict';
 /**
- * cluster_skin.js - G's Dash 0.8.0's cluster skins: the instrument cluster's own dials redrawn in the
+ * cluster_skin.js - G's Dash 0.8.1's cluster skins: the instrument cluster's own dials redrawn in the
  * G's Dash look (all ten: Stock, Simple, M Style, GT, Heritage, Flight, Digital '84, Sim Racing, Lumen,
  * Pixel), through the separately installed Cluster renderer tool (the client as cluster_logo.js loads
- * it). Showcase only: while G's Dash is open, the setting "clusterSkin" is on, the cluster shows its
- * Sport layout (the only one measured: driveMode SPORT) and the car stands still in P / N. Anything
- * else (moving, a gear in, another layout, no speed signal, an error, another app drawing on the panel)
- * and the stock dials are back within a second.
+ * it). While G's Dash is open, the setting "clusterSkin" is on and the cluster shows its Sport layout
+ * (the only one measured: driveMode SPORT), parked and (0.8.1) driving: the needles, fills, digital
+ * speed and gear follow the live values. Anything else (another layout, no speed signal, values older
+ * than LIVE_MS while moving, an error, another app drawing on the panel or the HUD) and the stock dials
+ * are back within a second; stale values within LIVE_MS + one pump.
+ *
+ * Live (0.8.1): main.js hands every car sample over (sample(), from car.onSample) with the signals'
+ * own arrival times; changed uniforms go out at once, PUSH_MS (33 ms, 30 Hz) at most, the rest on the
+ * next pump. Moving (speed >= PARKED_KMH): speed and rpm both newer than LIVE_MS (300 ms) or the skin
+ * hides (the stock dials show), and shows again only after RESHOW_MS of fresh values. Standing still,
+ * the 0.8.0 rule (G's Dash's loop newer than STALE_MS): the car sends a signal only when it changes.
+ * The speed shown: the true speed (Vehicle2, centre of gravity) * (1 + SPEED_PCT / 100) + SPEED_ADD mph,
+ * both 0 for now (no measured basis for an offset; the stock speedometer reads a little over).
  *
  * The layers: two "effect" layers on the "panel" target (1920x720: drawn over the stock gauges and under
  * the stock telltales, which stay on top), one a side, REGION_W x REGION_H at x 0 / 1060, y 24 (the
@@ -19,11 +28,12 @@
  * value changed (UNIFORM_MS at most).
  *
  * Fail-safe: the layers' alpha is the uniform u_fresh, 0 as the client sets it; a renderer animation
- * holds it at 1 for FRESH_HOLD ms and then takes it to 0, re-armed every REARM_MS while everything is
- * as it should be. G's Dash stopping, hanging or losing its connection: the skins fade by themselves
- * within a second, on the cluster's clock. A condition failing: visible 0 at once.
+ * holds it at 1 for FRESH_HOLD ms and then takes it to 0 in FRESH_FADE, re-armed every REARM_MS while
+ * everything is as it should be. G's Dash stopping, hanging or losing its connection: the skins fade by
+ * themselves within REARM_MS + FRESH_HOLD + FRESH_FADE (about 0.3 s), on the cluster's clock. A
+ * condition failing: visible 0 at once.
  *
- * Modes (the hidden diagnostics page, parked only): 'skin' (the look), 'align' (the alignment card:
+ * Modes (the hidden diagnostics page; 'align' and 'stock' parked only): 'skin' (the look), 'align' (the alignment card:
  * a 1 px outline of the measured geometry, to photograph against the stock dials), 'stock' (the Stock
  * redraw, whatever the look). Never throws, never blocks. Node 8: no ?., ?? or object spread.
  */
@@ -36,7 +46,9 @@ const TARGET = 'panel', KLASS = 'content', SKIN_Z = 90;
 const SPEED_IFACE = 'de.bmw.infotainment.vehicle.Vehicle2';
 const LAYOUT = 'SPORT';                                  // the cluster layout the geometry was measured on
 const PARKED_KMH = 1;
-const POLL_MS = 1000, PUMP_MS = 66, REARM_MS = 300, FRESH_HOLD = 700, FRESH_FADE = 200, STALE_MS = 600;
+const POLL_MS = 1000, PUMP_MS = 33, PUSH_MS = 33, REARM_MS = 60, FRESH_HOLD = 200, FRESH_FADE = 40, STALE_MS = 600;
+const LIVE_MS = 300, RESHOW_MS = 500;
+const SPEED_PCT = 0, SPEED_ADD = 0;                      // the speed shown: true * (1 + PCT / 100) + ADD mph
 const HOLD_MS = 3000, RECONNECT_MS = 8000, LOAD_RETRY_MS = 30000, ERR_RETRIES = 3;
 /** G's Dash's look ids -> the skin's (skin_looks.js) */
 const LOOK_SKIN = { simple: 'simple', m: 'm', gt: 'gt', heritage: 'heritage', flight: 'flight', digital: 'digital', simracing: 'simracing', lumen: 'lumen', pixel: 'pixel' };
@@ -54,7 +66,8 @@ function panelLayers(text, ownApp) {
 
 /**
  * Whether the skin may show, from main.js's state: { on, enabled, look, mode, data (car.data()),
- * speedAvail, fuel (fuel.state()), gear (L.gearText) } -> '' (yes) or why not.
+ * speedAvail, gear (L.gearText), at ({ speed, rpm }: when each last came, ms) } -> '' (yes) or why not.
+ * The look ('skin') parked and driving; the diagnostics' 'align' / 'stock' parked only.
  */
 function blocker(s) {
     if (!s || !s.on) return 'closed';
@@ -62,21 +75,32 @@ function blocker(s) {
     const d = s.data || {};
     if (d.demo) return 'demo data';
     if (!s.speedAvail || !SK.isNum(d.speed)) return 'no speed signal';
-    if (d.speed >= PARKED_KMH) return 'moving';
-    if (d.stage === 'D' || d.stage === 'R' || (SK.isNum(d.gear) && (d.gear > 0 || d.gear === -1) && !d.gearGuessed)) return 'in gear';
+    if (s.mode === 'align' || s.mode === 'stock') {
+        if (d.speed >= PARKED_KMH) return 'moving';
+        if (d.stage === 'D' || d.stage === 'R' || (SK.isNum(d.gear) && (d.gear > 0 || d.gear === -1) && !d.gearGuessed)) return 'in gear';
+    }
     if (d.driveMode !== LAYOUT) return 'not Sport';
     return '';
 }
-/** main.js's state -> the shader's values: speed mph, rpm, fuel 0..1, oil °F (null: unknown), gear */
+/** moving, the values' age: '' or 'stale values' (now: ms, the clock s.at is on) */
+function staleness(s, now) {
+    const d = (s && s.data) || {}, at = (s && s.at) || {};
+    if (!SK.isNum(d.speed) || d.speed < PARKED_KMH) return '';
+    if (!SK.isNum(at.speed) || now - at.speed > LIVE_MS) return 'stale values';
+    if (!SK.isNum(at.rpm) || now - at.rpm > LIVE_MS) return 'stale values';
+    return '';
+}
+/** the speed as shown, mph, from km/h */
+function shownSpeed(kmh) { return SK.isNum(kmh) ? Math.max(0, kmh / 1.609344 * (1 + SPEED_PCT / 100) + SPEED_ADD) : null; }
+/**
+ * main.js's state -> the shader's values: speed mph (as shown), rpm, gear. A gear only learned from rpm
+ * and speed (not the gearbox's) is unknown here: the stock gear shows.
+ */
 function values(s) {
-    const d = (s && s.data) || {}, f = s && s.fuel;
-    return {
-        speed: SK.isNum(d.speed) ? d.speed / 1.609344 : null,
-        rpm: SK.isNum(d.rpm) ? d.rpm : null,
-        fuel: f && SK.isNum(f.pct) ? f.pct / 100 : null,
-        oil: SK.isNum(d.oil) ? d.oil * 9 / 5 + 32 : null,
-        gear: s && s.gear ? String(s.gear) : '-',
-    };
+    const d = (s && s.data) || {};
+    let gear = s && s.gear ? String(s.gear) : '-';
+    if (d.gearGuessed && /^[0-9]$/.test(gear)) gear = '-';
+    return { speed: shownSpeed(d.speed), rpm: SK.isNum(d.rpm) ? d.rpm : null, gear };
 }
 const toBuf = (u8) => Buffer.from(u8.buffer, u8.byteOffset, u8.length);
 
@@ -95,7 +119,8 @@ class ClusterSkin {
         this.st = null; this.stAt = -1e15; this.want = false; this.why = 'closed';
         this.err = null; this.errAt = -1e15;
         this.cache = { id: '', tex: null };
-        this.stats = { connects: 0, layers: 0, assets: 0, bytes: 0, uniforms: 0, rearms: 0, drops: 0, refreshes: 0 };
+        this.stats = { connects: 0, layers: 0, assets: 0, bytes: 0, uniforms: 0, rearms: 0, drops: 0, refreshes: 0, samples: 0, pushes: 0, staleHides: 0 };
+        this.staleAt = -1e15; this.lastPush = -1e15;
         this._reset();
     }
     _reset() {
@@ -109,15 +134,36 @@ class ClusterSkin {
 
     /**
      * From G's Dash's loop (and its visibility / setting handlers): { on (open, the setting on), enabled,
-     * look (the G's Dash look id), mode ('skin' | 'align' | 'stock'), data, speedAvail, fuel, gear }.
+     * look (the G's Dash look id), mode ('skin' | 'align' | 'stock'), data, speedAvail, gear, at }.
      */
     update(s) {
-        this.st = s || {}; this.stAt = this.now();
+        // what sample() brought in since stays (it is newer than or the same as the loop's)
+        const prev = this.st;
+        this.st = Object.assign({}, s || {});
+        if (prev && prev.at && (!this.st.at || this.st.at === prev.at)) this.st.at = prev.at;
+        this.stAt = this.now();
         const on = !!(s && s.on && s.enabled !== false);
         if (!on) { if (this.cr) this._off(); this.want = false; this.why = blocker(s); return; }
         this.want = true;
         if (!this.cr) this._connect();
         this._apply();
+    }
+    /**
+     * A car sample (car.onSample: speed, rpm, accel), straight away: data (car.data()), at ({ speed,
+     * rpm }), gear (L.gearText). Changed uniforms out now, PUSH_MS apart at most (the pump sends the
+     * rest); a condition failing hides at once.
+     */
+    sample(data, at, gear) {
+        if (!this.st || !this.want) return;
+        this.stats.samples++;
+        this.st.data = data || this.st.data;
+        if (at) this.st.at = { speed: at.speed, rpm: at.rpm };
+        if (gear !== undefined) this.st.gear = gear;
+        if (!this.cr || !this.ready || !this.polled) return;
+        // hidden: shown again only if the layers are made (making them is update()'s, at the loop's pace)
+        if (!this.visible) { if (this.cur) this._apply(); return; }
+        if (this._why()) { this._apply(); return; }
+        if (this.now() - this.lastPush >= PUSH_MS) this._uniforms(false);
     }
     lookId() {
         const s = this.st || {};
@@ -197,6 +243,11 @@ class ClusterSkin {
         const b = blocker(this.st);
         if (b) return b;
         if (now - this.stAt > STALE_MS) return 'no update';
+        if (staleness(this.st, now)) {
+            if (this.visible) this.stats.staleHides++;
+            this.staleAt = now; return 'stale values';
+        }
+        if (now - this.staleAt < RESHOW_MS) return 'stale values';
         if (this.others.length) return 'panel in use';
         if (now - this.busyAt < HOLD_MS) return 'panel in use';
         if (this.layerErr || this.noEffect) return 'renderer error';
@@ -230,9 +281,9 @@ class ClusterSkin {
     /** Every PUMP_MS while connected: conditions again (so a stale loop hides it), uniforms, the dead-man. */
     _pump() {
         if (!this.want || !this.cr || !this.ready) return;
-        if (this.visible && this._why()) { this._apply(); return; }
-        if (!this.visible) return;
-        this._uniforms(false);
+        if (this._why()) { if (this.visible) this._apply(); return; }
+        if (!this.visible) { if (this.cur) this._apply(); if (!this.visible) return; }
+        if (this.now() - this.lastPush >= PUSH_MS - 2) this._uniforms(false);
         if (this.now() - this.lastRearm >= REARM_MS) this._rearm(false);
     }
     /** u_fresh: 1 for FRESH_HOLD ms, then down to 0 in FRESH_FADE, on the renderer's clock; replaced each time */
@@ -247,16 +298,18 @@ class ClusterSkin {
     }
     _uniforms(all) {
         const v = values(this.st), meta = this.cur.meta;
+        let sent = 0;
         ['L', 'R'].forEach((s) => {
             const L = this.cur[s], u = SK.uniforms(meta, s, v);
             Object.keys(u).forEach((k) => {
                 const key = u[k].join(',');
                 if (!all && L.sent[k] === key) return;
                 L.sent[k] = key;
-                this.cr.uniform(L.ref, k, u[k]); this.stats.uniforms++;
+                this.cr.uniform(L.ref, k, u[k]); this.stats.uniforms++; sent++;
             });
         });
         this.lastPump = this.now();
+        if (sent) { this.lastPush = this.lastPump; this.stats.pushes++; }
     }
 
     /** The look's assets and two layers (hidden); the old look's go after. false: could not. */
@@ -348,7 +401,7 @@ class ClusterSkin {
         const s = this.st || {};
         if (s.enabled === false) return { kind: 'off', text: 'Off' };
         if (this.err) return { kind: 'none', text: SHORT_ERR[this.err.error] || this.err.text };
-        if (!this.want) return { kind: 'off', text: 'On - parked, Sport layout' };
+        if (!this.want) return { kind: 'off', text: 'On - Sport layout' };
         if (!this.cr || !this.ready || !this.polled) return { kind: 'wait', text: 'Connecting to renderer' };
         if (this.noEffect) return { kind: 'none', text: 'Update Cluster renderer' };
         const why = this.why || this._why();
@@ -356,7 +409,7 @@ class ClusterSkin {
             const n = this.cur ? META.looks[this.cur.id].name : '';
             return { kind: 'on', text: 'Shown - ' + n };
         }
-        const TXT = { moving: 'Stock while driving', 'in gear': 'Stock while in gear', 'not Sport': 'Stock - Sport layout only',
+        const TXT = { moving: 'Stock while driving', 'stale values': 'Stock - signal delayed', 'in gear': 'Stock while in gear', 'not Sport': 'Stock - Sport layout only',
             'no speed signal': 'Stock - no speed signal', 'demo data': 'Stock - demo data', 'panel in use': 'Waiting - panel in use',
             'renderer error': 'Renderer refused the skin', assets: 'Skin failed to load', 'no update': 'Stock' };
         return { kind: why === 'renderer error' || why === 'assets' ? 'error' : 'wait', text: TXT[why] || 'Stock' };
@@ -364,4 +417,5 @@ class ClusterSkin {
 }
 const SHORT_ERR = { missing: 'Needs Cluster renderer', noclient: 'Update Cluster renderer', untrusted: 'Renderer not trusted', load: 'Renderer failed to load' };
 
-module.exports = { ClusterSkin, blocker, values, panelLayers, LOOK_SKIN, TARGET, KLASS, SKIN_Z, LAYOUT, POLL_MS, PUMP_MS, REARM_MS, FRESH_HOLD, FRESH_FADE, STALE_MS, HOLD_MS };
+module.exports = { ClusterSkin, blocker, staleness, values, shownSpeed, panelLayers, LOOK_SKIN, TARGET, KLASS, SKIN_Z, LAYOUT, PARKED_KMH,
+    POLL_MS, PUMP_MS, PUSH_MS, REARM_MS, FRESH_HOLD, FRESH_FADE, STALE_MS, LIVE_MS, RESHOW_MS, HOLD_MS, SPEED_PCT, SPEED_ADD };

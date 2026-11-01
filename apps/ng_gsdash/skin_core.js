@@ -1,6 +1,6 @@
 'use strict';
 /**
- * skin_core.js - G's Dash 0.8.0 cluster skins, the parts both the car and the build use: the stock Sport
+ * skin_core.js - G's Dash 0.8.1 cluster skins, the parts both the car and the build use: the stock Sport
  * layout's geometry (skin_geom.js) as functions, the two layer regions, the fragment shader each look's
  * layer runs on the cluster's GPU (GLSL ES 1.00), and the uniforms it takes from the car's values.
  *
@@ -15,8 +15,16 @@
  *            of it is drawn over the fill (ticks, numerals, lines), so a fill never covers those
  *   u_band   the fill "on", unrolled: column = s, row = sd (big dial rows 0..47, small 48..71, the small
  *            one's other colour 72..95: the Pixel look's low fuel, the stock reserve zone)
- *   u_glyph  the speed readout 0..9 and the gear letters, whole cells drawn in place
- * Per frame the app sends a few vec4s (fill ranges, needle positions, which cell): about 40 numbers.
+ *   u_glyph  the speed readout's digits (10 per place, 3 places: 0..999) and the gear letters, whole
+ *            cells drawn in place
+ * Per frame the app sends a few vec4s (fill range, needle position, which cells): about 24 numbers.
+ *
+ * What a skin redraws live (and covers opaquely, so no stock needle, glow, trail, tick or numeral shows
+ * beside it at any value): the speedometer and the tachometer (arc, needle, numerals, fill), the digital
+ * speed (all three places) and the gear. What stays the car's own (a hole in the art and the shader):
+ * the fuel and oil gauges (0.8.1: no verified live mapping, so never a stand-in), the ACC / speed-limit /
+ * driver-assist area at the speedometer's foot (ACC_AREA, generous: not measured), AUTO H, PARK, the
+ * centre and the bottom strip, and the gear readout whenever the gear is not known for sure.
  * Node 8: no ?., no ??, no object spread.
  */
 const GEOM = require('./skin_geom');
@@ -31,9 +39,24 @@ const BAND_W = 1544, BAND_ROWS = 96, MAIN_ROWS = 48, SMALL_ROW = 48, SMALL_ROWS 
 const S_SCALE = 16;                                     // the field's s code: floor(s * 16) in r + g * 256
 const SMALL_CODE = 100;                                 // the field's b: floor(sd * 2) (big dial), 100 + floor(sd * 2) (small), 255 none
 /** What a skin never draws over (panel px [x0, y0, x1, y1]): the stock content that stays the car's own. */
+const ACC_AREA = [492, 420, 720, 660];                  // the stock ACC / speed-limit / assist graphics (not measured: generous)
+// the centre (the map area's side): its right edge 8 px in from the measured one, so the tachometer's
+// needle at its top end (8000, x >= 1198) is never half in it (0.8.1)
+const CENTRE = [GEOM.keep.centre[0], GEOM.keep.centre[1], Math.min(GEOM.keep.centre[2], 1192), GEOM.keep.centre[3]];
 const CUTS = [
-    GEOM.cut.speedLimit, GEOM.cut.autoH, GEOM.cut.park, GEOM.keep.centre, GEOM.keep.bottom,
+    GEOM.cut.speedLimit, GEOM.cut.autoH, GEOM.cut.park, CENTRE, GEOM.keep.bottom, ACC_AREA,
 ];
+/**
+ * The small gauges, left to the car (0.8.1): their box (dial, needle sweep, numerals, icon; panel px)
+ * minus the big dial's own zone (MAIN_ZONE: sd from the big contour, so its rim stays covered). The
+ * bake makes the art transparent there; no small fill or needle is drawn.
+ */
+const SMALL_BOX = { L: [0, 428, 184, 660], R: [1720, 426, 1920, 660] };
+const MAIN_ZONE = [-16, 127];
+/** Opaque cover for the stock readouts at their widest: the speed (3 places) and the gear (2 characters) */
+const SPEED_COVER = [354, 317, 628, 403];
+const GEAR_COVER = [1224, 309, 1451, 403];
+const SPEED_MAX = 999;
 const CUT_PAD = 3;
 /* The value range per gauge (the scale's ends) and its unit */
 const RANGE = { speedo: [0, 200], tach: [0, 8], fuel: [0, 1], oil: [120, 300] };
@@ -98,9 +121,10 @@ function cutsOf(side) {
 
 /* ---------------- the uniforms ---------------- */
 /**
- * The car's values -> the side's uniforms, for the look's meta (skin_looks.js). st: { speed (mph), rpm,
- * fuel (0..1 or null), oil (°F or null), gear ('P', 'R', 'N', 'D', '1'..'9', or '-' / null: unknown) }.
- * -> { u_m, u_s, u_nm, u_ns, u_gl, u_cut }: 4 numbers each.
+ * The car's values -> the side's uniforms, for the look's meta (skin_looks.js). st: { speed (mph, as
+ * shown), rpm, gear ('P', 'R', 'N', 'D', '1'..'9', or '-' / null: unknown) }.
+ * -> { u_m, u_nm, u_gl, u_cut }: 4 numbers each. u_gl: left, the speed's ones, tens, hundreds digit
+ * (-1: no digit there); right, the gear's cell.
  */
 function uniforms(meta, side, st) {
     const S = SIDES[side], out = {};
@@ -109,7 +133,7 @@ function uniforms(meta, side, st) {
         return isNum(v) ? clamp(v, RANGE[k][0], RANGE[k][1]) : null;
     };
     const NONE = [1, 0, 0, 0];                         // lo > hi: no fill
-    [['u_m', 'u_nm', S.main, 0], ['u_s', 'u_ns', S.small, 1]].forEach((g) => {
+    [['u_m', 'u_nm', S.main, 0]].forEach((g) => {
         const k = g[2], f = meta.fill[k], v = val(k);
         let fill = NONE;
         if (f && f.kind === 'sweep' && v !== null) {
@@ -126,12 +150,16 @@ function uniforms(meta, side, st) {
     });
     const cells = meta.cells[side];
     let cell = -1;
-    if (side === 'L') { const s = isNum(st.speed) ? Math.round(st.speed) : -1; cell = s >= 0 && s < cells.labels.length ? s : -1; }
-    else cell = cells.labels.indexOf(String(st.gear));
-    out.u_gl = [cell, 0, 0, 0];
-    // the gear unknown: its box cut out, so the stock gear shows (the speed readout is always ours)
-    const gb = GEOM.text.gear;
-    out.u_cut = side === 'R' && cell < 0 && cells.labels.length ? local('R', [gb[0] - 14, gb[1] - 10, gb[2] + 14, gb[3] + 10]).map(r2) : [0, 0, 0, 0];
+    if (side === 'L') {
+        const n = isNum(st.speed) ? clamp(Math.round(st.speed), 0, SPEED_MAX) : -1;
+        out.u_gl = n < 0 || !cells.labels.length ? [-1, -1, -1, 0] : [n % 10, n >= 10 ? Math.floor(n / 10) % 10 : -1, n >= 100 ? Math.floor(n / 100) % 10 : -1, 0];
+    } else {
+        cell = cells.labels.indexOf(String(st.gear));
+        out.u_gl = [cell, 0, 0, 0];
+    }
+    // the gear unknown (or only guessed): its whole widest box cut out, so the stock gear shows
+    const gb = GEAR_COVER;
+    out.u_cut = side === 'R' && cell < 0 && cells.labels.length ? local('R', [gb[0] - 4, gb[1] - 4, gb[2] + 4, gb[3] + 4]).map(r2) : [0, 0, 0, 0];
     return out;
 }
 function isNum(v) { return typeof v === 'number' && isFinite(v); }
@@ -165,11 +193,11 @@ function needleGlsl(n, N, on) {
  * frame is a constant here; the fixed cut-outs force alpha 0 again (they are 0 in the art already).
  */
 function fragment(meta, side) {
-    const S = SIDES[side], cells = meta.cells[side], fm = meta.fill[S.main], fs = meta.fill[S.small];
+    const S = SIDES[side], cells = meta.cells[side], fm = meta.fill[S.main];
     const trail = (f) => (f && f.trail ? f.trail : [1, 0, 1]);
     const head = (f) => (f && f.head ? f.head : [0, 1]);
     const q = (f) => (f && f.q ? f.q : 0);
-    const nm = meta.needle[S.main], ns = meta.needle[S.small];
+    const nm = meta.needle[S.main];
     const cuts = cutsOf(side).map((r) => '    if (inRect(q, vec4(' + r.map(f1).join(', ') + '))) a = 0.0;').join('\n');
     return [
         '#ifdef GL_FRAGMENT_PRECISION_HIGH',
@@ -185,9 +213,7 @@ function fragment(meta, side) {
         'uniform sampler2D u_glyph;',
         'uniform float u_fresh;',
         'uniform vec4 u_m;',
-        'uniform vec4 u_s;',
         'uniform vec4 u_nm;',
-        'uniform vec4 u_ns;',
         'uniform vec4 u_gl;',
         'uniform vec4 u_cut;',
         'const vec2 SZ = vec2(' + f1(S.w) + ', ' + f1(S.h) + ');',
@@ -227,24 +253,31 @@ function fragment(meta, side) {
         '    if (code >= 128.0) {',
         // each gauge class may sample on its own grid (the Pixel look: 4 px blocks)
         fillCall('u_m', MAIN_ROWS, fm, q(fm), trail(fm), head(fm), 1),
-        fillCall('u_s', SMALL_ROWS, fs, q(fs), trail(fs), head(fs), 2),
         '    }',
         needleGlsl(nm, 'u_nm', 'u_nm.z != 0.0 || u_nm.w != 0.0'),
-        needleGlsl(ns, 'u_ns', 'u_ns.z != 0.0 || u_ns.w != 0.0'),
-        '    if (u_gl.x >= 0.0) {',
-        '        vec2 g = q - vec2(' + f1(cells.rect[0]) + ', ' + f1(cells.rect[1]) + ');',
-        '        if (g.x >= 0.0 && g.y >= 0.0 && g.x < ' + f1(cells.rect[2]) + ' && g.y < ' + f1(cells.rect[3]) + ') {',
-        '            float col = mod(u_gl.x, ' + f1(cells.cols) + '), row = floor(u_gl.x / ' + f1(cells.cols) + ' + 0.001);',
-        '            vec4 t = texel(u_glyph, g + vec2(col * ' + f1(cells.rect[2]) + ', row * ' + f1(cells.rect[3]) + '), GSZ);',
-        '            c = mix(c, t.rgb, t.a); a = a + t.a * (1.0 - a);',
-        '        }',
-        '    }',
+        glyphGlsl(cells),
         cuts,
         '    if (inRect(q, u_cut)) a = 0.0;',
         '    gl_FragColor = vec4(c, a * clamp(u_fresh, 0.0, 1.0));',
         '}',
         '',
     ].join('\n');
+}
+/** the readout cells: the gear (one cell, u_gl.x) or the speed's places (cells.slots: u_gl.x, .y, .z) */
+function glyphGlsl(cells) {
+    const slots = cells.slots ? cells.slots : (cells.labels.length ? [[cells.rect[0], cells.rect[1]]] : []);
+    const cw = cells.slots ? cells.cell[0] : cells.rect[2], ch = cells.slots ? cells.cell[1] : cells.rect[3];
+    const comp = ['x', 'y', 'z'];
+    return slots.map((o, p) => [
+        '    if (u_gl.' + comp[p] + ' >= 0.0) {',
+        '        vec2 g = q - vec2(' + f1(o[0]) + ', ' + f1(o[1]) + ');',
+        '        if (g.x >= 0.0 && g.y >= 0.0 && g.x < ' + f1(cw) + ' && g.y < ' + f1(ch) + ') {',
+        '            float col = mod(u_gl.' + comp[p] + ', ' + f1(cells.cols) + '), row = ' + (cells.slots ? f1(p) : 'floor(u_gl.x / ' + f1(cells.cols) + ' + 0.001)') + ';',
+        '            vec4 t = texel(u_glyph, g + vec2(col * ' + f1(cw) + ', row * ' + f1(ch) + '), GSZ);',
+        '            c = mix(c, t.rgb, t.a); a = a + t.a * (1.0 - a);',
+        '        }',
+        '    }',
+    ].join('\n')).join('\n');
 }
 function fillCall(U, rows, f, q, tr, hd, g) {
     if (!f || f.kind === 'none') return '';
@@ -263,4 +296,4 @@ function fillCall(U, rows, f, q, tr, hd, g) {
 }
 
 module.exports = { GEOM, PANEL_W, PANEL_H, REGION_W, REGION_H, SIDES, BAND_W, BAND_ROWS, MAIN_ROWS, SMALL_ROW, SMALL_ROWS, ALT_ROW,
-    SMALL_CODE, S_SCALE, CUTS, CUT_PAD, RANGE, LEN, MAJ, at, sOf, dirAt, local, cutsOf, uniforms, fragment, clamp, isNum };
+    SMALL_CODE, S_SCALE, CUTS, CUT_PAD, RANGE, ACC_AREA, CENTRE, SMALL_BOX, MAIN_ZONE, SPEED_COVER, GEAR_COVER, SPEED_MAX, LEN, MAJ, at, sOf, dirAt, local, cutsOf, uniforms, fragment, clamp, isNum };
