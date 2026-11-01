@@ -20,14 +20,17 @@
  * while the lights run (shown again after RESHOW_MS of fresh values), G's Dash's loop older than
  * STALE_MS, another app's layer on the HUD or the panel (G's TV's video: back HOLD_MS, about 1 s, after
  * it goes), any renderer error. No rpm or no shift point: no lights, the speed and gear still shown.
- * Fail-safe as the cluster skins: u_fresh held by a renderer animation re-armed every REARM_MS; G's Dash
- * stopping or hanging and the HUD fades by itself within about 0.3 s.
+ * Fail-safe as the cluster skins (failsafe.js): u_fresh held by a renderer animation re-armed every REARM_MS; G's Dash
+ * stopping or hanging and the HUD fades by itself within about 0.3 s. 0.11.3: re-armed new-first (no frame with
+ * u_fresh 0 between a stop and the next start: the HUD strobed with the stock HUD under it), the client's u_fresh 1
+ * while shown, 0 only on hiding; shown / hidden / re-arm counters logged at most every 30 s (failsafe.Diag).
  * Never throws, never blocks. Node 8: no ?., ?? or object spread.
  */
 const HC = require('./hud_core');
 const CL = require('./cluster_logo');
 const ASSETS = require('./skin_assets');
 const CS = require('./cluster_skin');
+const FS = require('./failsafe');
 
 const TARGET = 'hud', KLASS = 'content', HUD_Z = 80;
 const PARKED_KMH = 1;
@@ -78,8 +81,9 @@ class HudShift {
         this.err = null; this.errAt = -1e15;
         this.art = null;                                    // the decoded hud_shift.png
         this.big = null;                                    // { id, img }: the look's big cells (hud_full.png)
-        this.stats = { connects: 0, layers: 0, assets: 0, bytes: 0, uniforms: 0, rearms: 0, drops: 0, refreshes: 0, samples: 0, pushes: 0, staleHides: 0 };
+        this.stats = { connects: 0, layers: 0, assets: 0, bytes: 0, uniforms: 0, rearms: 0, drops: 0, refreshes: 0, samples: 0, pushes: 0, staleHides: 0, shows: 0, hides: 0 };
         this.staleAt = -1e15; this.lastPush = -1e15;
+        this.diag = new FS.Diag(this.log, 'hud shift', this.now);   // 0.11.3: rate-limited counters
         this._reset();
     }
     _reset() {
@@ -140,9 +144,9 @@ class HudShift {
             if (this.cr !== cr) return;
             this.ready = false; this.polled = false; this.downAt = this.now();
             this.asked = 0; this.answered = 0;
-            if (this.cur) { try { cr.set(this.cur.ref, { visible: false }); } catch (e) { /* gone */ } this.cur.ok = false; }
+            if (this.cur) { try { cr.set(this.cur.ref, { visible: false }); } catch (e) { /* gone */ } FS.setBase(cr, this.cur, 0); this.cur.ok = false; }
+            if (this.visible) this.diag.hidden('disconnected', 'hud shift: disconnected'); else this.log.info('hud shift: disconnected');
             this.visible = false;
-            this.log.info('hud shift: disconnected');
         });
         cr.on('layer', (ref, state, reason) => {
             if (this.cr !== cr || !this.cur || !this.cur.ok || ref !== this.cur.ref) return;
@@ -208,11 +212,12 @@ class HudShift {
             return;
         }
         c.ok = true;
-        if (!c.bound) { cr.bind(c.ref, 'u_hud', c.a); cr.bind(c.ref, 'u_big', c.g); cr.uniform(c.ref, 'u_fresh', [0]); c.bound = true; }
+        if (!c.bound) { cr.bind(c.ref, 'u_hud', c.a); cr.bind(c.ref, 'u_big', c.g); c.base = -1; FS.setBase(cr, c, 0); c.bound = true; }
         this.log.info('hud shift: ' + c.id + ' confirmed by the renderer');
     }
     _tick() {
         if (!this.want || !this.cr) return;
+        this.diag.tick();
         if (!this.ready) {
             if (this.now() - this.downAt >= RECONNECT_MS) this._restart('not connected for ' + Math.round((this.now() - this.downAt) / 1000) + ' s');
             return;
@@ -232,7 +237,7 @@ class HudShift {
         if (b) return b;
         if (now - this.stAt > STALE_MS) return 'no update';
         if (staleness(this.st, now)) {
-            if (this.visible) this.stats.staleHides++;
+            if (this.visible) { this.stats.staleHides++; this.diag.stale(); }
             this.staleAt = now; return 'stale values';
         }
         if (now - this.staleAt < RESHOW_MS) return 'stale values';
@@ -255,18 +260,21 @@ class HudShift {
         }
         if (!this.cur.ok) { this.why = 'making'; return; }   // 0.8.5: nothing to it before the service confirms it
         if (!this.visible) {
+            // 0.11.3: u_fresh 1 as the client's own first (a renderer stop restores to it), then the animation
+            FS.setBase(this.cr, this.cur, 1);
             this._uniforms(true);
+            this.stats.shows++; this.diag.shown('hud shift: ' + id + ' shown');
             this._rearm();
             this.cr.set(this.cur.ref, { visible: true });
             this.visible = true;
-            this.log.info('hud shift: ' + id + ' shown');
         }
     }
     _hide(why) {
         if (!this.visible || !this.cur || !this.cur.ok || !this.cr) { this.visible = false; return; }
         try { this.cr.set(this.cur.ref, { visible: false }); } catch (e) { /* gone */ }
+        FS.setBase(this.cr, this.cur, 0);                  // 0.11.3: back to 0 only on hiding
         this.visible = false;
-        this.log.info('hud shift: hidden (' + why + ')');
+        this.stats.hides++; this.diag.hidden(why, 'hud shift: hidden (' + why + ')');
     }
     _pump() {
         if (!this.want || !this.cr || !this.ready) return;
@@ -276,11 +284,10 @@ class HudShift {
         if (this.now() - this.lastPush >= PUSH_MS - 2) this._uniforms(false);
         if (this.now() - this.lastRearm >= REARM_MS) this._rearm();
     }
+    /** 0.11.3: the new animation first, the old one stopped after it (failsafe.js) */
     _rearm() {
-        const cr = this.cr, L = this.cur;
-        if (L.anim && typeof cr.stop === 'function') { try { cr.stop(L.ref, L.anim); } catch (e) { /* gone */ } }
-        L.anim = cr.animate(L.ref, { property: 'uniform', name: 'u_fresh', keys: '0:1 ' + FRESH_HOLD + ':1 ' + (FRESH_HOLD + FRESH_FADE) + ':0', loop: false, interp: 'linear' }) || 0;
-        this.lastRearm = this.now(); this.stats.rearms++;
+        FS.rearm(this.cr, this.cur, FRESH_HOLD, FRESH_FADE);
+        this.lastRearm = this.now(); this.stats.rearms++; this.diag.rearmed();
     }
     _uniforms(all) {
         const v = values(this.st, this.now());
@@ -312,7 +319,7 @@ class HudShift {
         // the old look's assets go first: two looks' would not fit the renderer's pixel memory with the logo
         const old = this.cur;
         if (old) { this._dropAll(old); this.cur = null; this.visible = false; }
-        const cur = { id, style, assets: [], ref: 0, anim: 0, sent: '' };
+        const cur = { id, style, assets: [], ref: 0, anim: 0, sent: '', base: -1 };
         const a = this._asset(pane, 'nearest'), g = this._asset(cells, big.sampling);
         [a, g].forEach((r) => { if (r) cur.assets.push(r); });
         if (!a || !g) { this._dropAll(cur); return false; }
@@ -363,6 +370,7 @@ class HudShift {
         return had;
     }
     _off() {
+        this.diag.tick(true);                              // 0.11.3: the window's counters, if any
         if (this.poll) this.T.clearInterval(this.poll);
         if (this.pump) this.T.clearInterval(this.pump);
         if (this.cr) {

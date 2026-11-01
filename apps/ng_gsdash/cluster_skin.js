@@ -31,7 +31,9 @@
  * holds it at 1 for FRESH_HOLD ms and then takes it to 0 in FRESH_FADE, re-armed every REARM_MS while
  * everything is as it should be. G's Dash stopping, hanging or losing its connection: the skins fade by
  * themselves within REARM_MS + FRESH_HOLD + FRESH_FADE (about 0.3 s), on the cluster's clock. A
- * condition failing: visible 0 at once.
+ * condition failing: visible 0 at once. 0.11.3 (failsafe.js): re-armed new-first (0.11.2's stop-then-start
+ * could draw a frame with u_fresh 0 between the two), the client's u_fresh 1 while shown, 0 only on hiding;
+ * shown / hidden / re-arm counters logged at most every 30 s.
  *
  * Modes (the hidden diagnostics page; 'align' and 'stock' parked only): 'skin' (the look), 'align' (the alignment card:
  * a 1 px outline of the measured geometry, to photograph against the stock dials), 'stock' (the Stock
@@ -42,6 +44,7 @@ const ASSETS = require('./skin_assets');
 const META = require('./skin_looks');
 const CL = require('./cluster_logo');
 const MEM = require('./cluster_memory');
+const FS = require('./failsafe');
 const MEM_FULL = MEM.MEM_FULL, memoryUsers = MEM.memoryUsers, memoryNote = MEM.memoryNote;
 
 const TARGET = 'panel', KLASS = 'content', SKIN_Z = 90;
@@ -123,8 +126,9 @@ class ClusterSkin {
         this.err = null; this.errAt = -1e15;
         this.cache = { id: '', tex: null };
         this.fieldTex = null;                          // 0.11.2: the field's atlases (decoded once)
-        this.stats = { connects: 0, layers: 0, assets: 0, bytes: 0, uniforms: 0, rearms: 0, drops: 0, refreshes: 0, samples: 0, pushes: 0, staleHides: 0 };
+        this.stats = { connects: 0, layers: 0, assets: 0, bytes: 0, uniforms: 0, rearms: 0, drops: 0, refreshes: 0, samples: 0, pushes: 0, staleHides: 0, shows: 0, hides: 0 };
         this.staleAt = -1e15; this.lastPush = -1e15;
+        this.diag = new FS.Diag(this.log, 'cluster skin', this.now);   // 0.11.3: rate-limited counters
         this._reset();
     }
     _reset() {
@@ -209,11 +213,11 @@ class ClusterSkin {
             this.asked = 0; this.answered = 0;
             // 0.8.5: hidden in the client's copy (the replay makes them hidden); nothing in use until confirmed
             if (this.cur) {
-                ['L', 'R'].forEach((s) => { if (this.cur[s]) { try { cr.set(this.cur[s].ref, { visible: false }); } catch (e) { /* gone */ } } });
+                ['L', 'R'].forEach((s) => { if (this.cur[s]) { try { cr.set(this.cur[s].ref, { visible: false }); } catch (e) { /* gone */ } FS.setBase(cr, this.cur[s], 0); } });
                 this.cur.ok = false;
             }
+            if (this.visible) this.diag.hidden('disconnected', 'cluster skin: disconnected'); else this.log.info('cluster skin: disconnected');
             this.visible = false;
-            this.log.info('cluster skin: disconnected');
         });
         cr.on('layer', (ref, state, reason) => {
             if (this.cr !== cr || !this.cur || !this.cur.ok) return;
@@ -311,7 +315,7 @@ class ClusterSkin {
             const L = c[s];
             if (L.bound) return;                         // a replay: the client sent the binds again
             cr.bind(L.ref, 'u_field', this.field[s]); cr.bind(L.ref, 'u_art', L.art); cr.bind(L.ref, 'u_band', L.band); cr.bind(L.ref, 'u_glyph', L.glyph);
-            cr.uniform(L.ref, 'u_fresh', [0]);
+            L.base = -1; FS.setBase(cr, L, 0);
             L.bound = true;
         });
         this.log.info('cluster skin: ' + c.id + ' confirmed by the renderer');
@@ -322,6 +326,7 @@ class ClusterSkin {
     }
     _tick() {
         if (!this.want || !this.cr) return;
+        this.diag.tick();
         if (!this.ready) {
             if (this.now() - this.downAt >= RECONNECT_MS) this._restart('not connected for ' + Math.round((this.now() - this.downAt) / 1000) + ' s');
             return;
@@ -342,7 +347,7 @@ class ClusterSkin {
         if (b) return b;
         if (now - this.stAt > STALE_MS) return 'no update';
         if (staleness(this.st, now)) {
-            if (this.visible) this.stats.staleHides++;
+            if (this.visible) { this.stats.staleHides++; this.diag.stale(); }
             this.staleAt = now; return 'stale values';
         }
         if (now - this.staleAt < RESHOW_MS) return 'stale values';
@@ -365,18 +370,21 @@ class ClusterSkin {
         }
         if (!this.cur.ok) { this.why = 'making'; return; }   // 0.8.5: nothing to it before the service confirms it
         if (!this.visible) {
+            // 0.11.3: u_fresh 1 as the client's own first (a renderer stop restores to it), then the animation
+            ['L', 'R'].forEach((s) => FS.setBase(this.cr, this.cur[s], 1));
             this._uniforms(true);
-            this._rearm(true);
+            this.stats.shows++; this.diag.shown('cluster skin: ' + id + ' shown');
+            this._rearm();
             ['L', 'R'].forEach((s) => { this.cr.set(this.cur[s].ref, { visible: true }); });
             this.visible = true;
-            this.log.info('cluster skin: ' + id + ' shown');
         }
     }
     _hide(why) {
         if (!this.visible || !this.cur || !this.cur.ok || !this.cr) { this.visible = false; return; }
         ['L', 'R'].forEach((s) => { try { this.cr.set(this.cur[s].ref, { visible: false }); } catch (e) { /* gone */ } });
+        ['L', 'R'].forEach((s) => FS.setBase(this.cr, this.cur[s], 0));   // 0.11.3: back to 0 only on hiding
         this.visible = false;
-        this.log.info('cluster skin: hidden (' + why + ')');
+        this.stats.hides++; this.diag.hidden(why, 'cluster skin: hidden (' + why + ')');
     }
     /** Every PUMP_MS while connected: conditions again (so a stale loop hides it), uniforms, the dead-man. */
     _pump() {
@@ -385,17 +393,13 @@ class ClusterSkin {
         if (!this.visible) { if (this.cur) this._apply(); if (!this.visible) return; }
         if (!this.cur || !this.cur.ok) return;
         if (this.now() - this.lastPush >= PUSH_MS - 2) this._uniforms(false);
-        if (this.now() - this.lastRearm >= REARM_MS) this._rearm(false);
+        if (this.now() - this.lastRearm >= REARM_MS) this._rearm();
     }
-    /** u_fresh: 1 for FRESH_HOLD ms, then down to 0 in FRESH_FADE, on the renderer's clock; replaced each time */
+    /** u_fresh: 1 for FRESH_HOLD ms, then down to 0 in FRESH_FADE, on the renderer's clock; replaced each
+     * time - 0.11.3: the new animation first, the old one stopped after it (failsafe.js) */
     _rearm() {
-        const cr = this.cr;
-        ['L', 'R'].forEach((s) => {
-            const L = this.cur[s];
-            if (L.anim && typeof cr.stop === 'function') { try { cr.stop(L.ref, L.anim); } catch (e) { /* gone */ } }
-            L.anim = cr.animate(L.ref, { property: 'uniform', name: 'u_fresh', keys: '0:1 ' + FRESH_HOLD + ':1 ' + (FRESH_HOLD + FRESH_FADE) + ':0', loop: false, interp: 'linear' }) || 0;
-        });
-        this.lastRearm = this.now(); this.stats.rearms++;
+        ['L', 'R'].forEach((s) => FS.rearm(this.cr, this.cur[s], FRESH_HOLD, FRESH_FADE));
+        this.lastRearm = this.now(); this.stats.rearms++; this.diag.rearmed();
     }
     _uniforms(all) {
         const v = values(this.st), meta = this.cur.meta;
@@ -449,7 +453,7 @@ class ClusterSkin {
             if (!ref) { this.log.warn('cluster skin: effect layer refused by the client'); this._dropAll(cur); return false; }
             // 0.8.5: bound (and its uniforms sent) only once the service confirms the layer and its assets:
             // 0.8.4 sent them at once, to a layer the service had refused ("no such layer")
-            cur[s] = { ref, anim: 0, sent: {}, art, band, glyph, bound: false };
+            cur[s] = { ref, anim: 0, sent: {}, art, band, glyph, bound: false, base: -1 };
             this.stats.layers++;
         }
         this.cur = cur; this.visible = false;
@@ -490,6 +494,7 @@ class ClusterSkin {
     }
     _off() {
         const cr = this.cr;
+        this.diag.tick(true);                              // 0.11.3: the window's counters, if any
         if (this.poll) this.T.clearInterval(this.poll);
         if (this.pump) this.T.clearInterval(this.pump);
         if (cr) {

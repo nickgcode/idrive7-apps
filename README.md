@@ -2,7 +2,7 @@
 
 Apps for BMW iDrive 7 head units, installed through robertn_store.
 
-- **G's Dash** (`ng_gsdash`): driver display and car hub in six looks, with a home-screen widget. Cluster skins that match your look, a full HUD (speed, gear, shift lights), a Cluster source picker, and favourite looks you switch with a tap on the gear on Drive. 0.11.0 adds a new Showcase, the Carbon Grid M Style and oil / coolant colour zones; 0.11.2 makes the cluster skins fit beside the CarPlay map, G's Music and G's TV.
+- **G's Dash** (`ng_gsdash`): driver display and car hub in six looks, with a home-screen widget. Cluster skins that match your look, a full HUD (speed, gear, shift lights), a Cluster source picker, and favourite looks you switch with a tap on the gear on Drive. 0.11.0 adds a new Showcase, the Carbon Grid M Style and oil / coolant colour zones; 0.11.2 makes the cluster skins fit beside the CarPlay map, G's Music and G's TV; 0.11.3 stops the HUD and cluster dials flickering.
   Optional *Cluster map* setting: requires the Waze on cluster tool from the Store; off by default;
   untested on most firmware. To revert, set it Off and restart the head unit, or remove the tool.
 - **G's Music** (`ng_spotify`): full-screen Spotify player with lyrics, a visualizer and a home-screen
