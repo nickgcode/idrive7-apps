@@ -14,6 +14,12 @@
  * and turns light when the decoder can't keep up.
  *
  * state: idle | tuning | buffering | playing | paused | offline | error  (text: what to show)
+ *
+ * 0.4.1, instant resume: a pause keeps everything (the index, the decoder's state, the fetched samples past
+ * the decoder and the next decoded picture), so resume() shows a picture again within a frame or two, without
+ * tuning. warmBytes() / trim() / release() let main.js cap that memory. still() is a copy of the newest
+ * picture (the dimmed one under "Video available when parked"). A src's exactS starts the picture at that
+ * time: decoded from the keyframe before it, the pictures before it not shown (a cold resume to the second).
  */
 const EventEmitter = require('events');
 const mp4 = require('./tv_mp4');
@@ -43,6 +49,7 @@ class Player extends EventEmitter {
         this.retryAt = 0; this.fails = 0;
         this.futureRun = 0; this.futureLogged = false;
         this.cache = new Map();        // href -> parsed index (the last few)
+        this.skipTo = 0;               // exactS: pictures before this are decoded, not shown
     }
 
     _set(state, text) {
@@ -61,7 +68,7 @@ class Player extends EventEmitter {
     async tune(src) {
         const gen = ++this.gen;
         this._stopTimer();
-        this.src = src; this.chunks = []; this.pending = null; this.fetching = false;
+        this.src = src; this.chunks = []; this.pending = null; this.lastPic = null; this.fetching = false;
         this.v = null; this.clockRun = false; this.mediaAt = 0;
         this._set('tuning', src.title);
         try {
@@ -77,13 +84,15 @@ class Player extends EventEmitter {
             this.v = v;
             this.dec.open(v.avcC);
             this._applyMode(true);
-            const k = mp4.keyBefore(v, src.startS || 0);
+            const exact = src.exactS > 0 ? Math.min(src.exactS, v.duration - 1) : 0;
+            const k = mp4.keyBefore(v, exact || src.startS || 0);
             this.decIdx = this.fetchIdx = k;
             this.endT = src.endS > 0 ? Math.min(src.endS, v.duration) : v.duration;
             this.mediaAt = v.cts[k] / v.timescale;
+            this.skipTo = exact > this.mediaAt + 0.05 ? exact : 0;
             this.fails = 0;
             this.log.info('tuned: ' + v.codec + ' ' + v.w + 'x' + v.h + ' profile ' + v.profile + ', ' + v.n + ' samples, ' +
-                (v.n / v.duration).toFixed(2) + ' fps, from ' + this.mediaAt.toFixed(1) + ' s');
+                (v.n / v.duration).toFixed(2) + ' fps, from ' + this.mediaAt.toFixed(1) + ' s' + (this.skipTo ? ' (shown from ' + this.skipTo.toFixed(1) + ' s)' : ''));
             this._set(this.paused ? 'paused' : 'buffering', '');
             this._fetch();
             this._kick(0);
@@ -116,7 +125,50 @@ class Player extends EventEmitter {
         if (this.state === 'paused') { this._set('buffering', ''); this._fetch(); this._kick(0); }
         else if (this.src && (this.state === 'offline' || this.state === 'error')) this.tune(this.src);
     }
-    stop() { this.gen++; this._stopTimer(); clearTimeout(this.retryTimer); this.chunks = []; this.pending = null; this.v = null; this._set('idle', ''); }
+    stop() { this.gen++; this._stopTimer(); clearTimeout(this.retryTimer); this.chunks = []; this.pending = null; this.v = null; this.fetching = false; this._set('idle', ''); }
+
+    /* ----- 0.4.1: the warm state while paused ----- */
+    /** Whether resume() continues in place (paused with the index, the decoder and the position here). */
+    warm() { return !!(this.v && this.paused && this.state === 'paused'); }
+    /** Bytes held for a resume: the fetched samples and the decoded picture(s). */
+    warmBytes() {
+        let b = 0;
+        this.chunks.forEach((c) => { b += c.body.length; });
+        return b + (this.pendBuf ? this.pendBuf.length : 0) + (this.stillBuf ? this.stillBuf.length : 0);
+    }
+    /**
+     * Keeps at most max bytes of fetched samples (the first chunk, the one the decoder is in, always: the
+     * keyframe and a small buffer); the rest is fetched again on resume.
+     */
+    trim(max) {
+        let b = 0, keep = 0;
+        for (; keep < this.chunks.length; keep++) {
+            b += this.chunks[keep].body.length;
+            if (keep > 0 && b > max) break;
+        }
+        if (keep >= this.chunks.length) return 0;
+        const gone = this.chunks.length - keep;
+        this.chunks.length = keep;
+        this.fetchIdx = keep ? this.chunks[keep - 1].b : this.decIdx;
+        this.fetching = false; this.fgen = (this.fgen || 0) + 1;
+        return gone;
+    }
+    /** Lets go of the warm state (the index too with all): a resume then tunes again (from an exact time). */
+    release(all) {
+        const pos = this.v ? this.now() : 0;
+        this.stop();
+        this.pendBuf = null; this.lastPic = null;
+        if (all) this.cache.clear();
+        return pos;
+    }
+    /** A copy of the newest decoded picture { w, h, yuv }, or null. */
+    still() {
+        const p = this.pending || this.lastPic;
+        if (!p || !p.yuv) return null;
+        if (!this.stillBuf || this.stillBuf.length !== p.yuv.length) this.stillBuf = new Uint8Array(p.yuv.length);
+        this.stillBuf.set(p.yuv);
+        return { w: p.w, h: p.h, yuv: this.stillBuf };
+    }
 
     _applyMode(force) {
         const m = this.mode();
@@ -131,7 +183,7 @@ class Player extends EventEmitter {
         return (v.dts[Math.min(this.fetchIdx, v.n) - 1] - v.dts[Math.min(this.decIdx, v.n - 1)]) / v.timescale;
     }
     async _fetch() {
-        const v = this.v, gen = this.gen;
+        const v = this.v, gen = this.gen, fg = this.fgen = this.fgen || 0;
         if (!v || this.fetching || this.paused || this.fetchIdx >= v.n || Date.now() < this.retryAt) return;
         if (v.dts[this.fetchIdx] / v.timescale > this.endT + 1) return;      // past the programme's end
         if (this._aheadS() > AHEAD_S) return;
@@ -145,7 +197,7 @@ class Player extends EventEmitter {
         this.fetching = true;
         try {
             const r = await this.net.range(this.src.href, start, end - 1);
-            if (gen !== this.gen) return;
+            if (gen !== this.gen || fg !== this.fgen) return;     // tuned elsewhere, or trimmed meanwhile
             this.chunks.push({ a, b, base: start, body: r.body });
             this.fetchIdx = b; this.fails = 0;
         } catch (e) {
@@ -181,6 +233,7 @@ class Player extends EventEmitter {
         const now = Date.now(), cap = Math.max(1, this.cap());
         if (now - (this.lastShow || 0) < 1000 / cap - 4) return;
         this.lastShow = now;
+        this.lastPic = p;
         try { this.sink(p); } catch (e) { this.log.warn('player: sink ' + e.message); }
         const s = this.stats;
         s.shown++;
@@ -246,6 +299,10 @@ class Player extends EventEmitter {
     }
     _take(f) {
         const v = this.v, t = v.cts[f.pts] / v.timescale;
+        if (this.skipTo) {
+            if (t < this.skipTo - 0.02) return;          // before the exact place: decoded, not shown
+            this.skipTo = 0; this.mediaAt = t;
+        }
         if (this.clockRun && this.now() - t > RESYNC_S) {
             this.log.warn('player: ' + (this.now() - t).toFixed(1) + ' s behind - clock moved');
             this.mediaAt = t; this.wallAt = Date.now();

@@ -124,10 +124,20 @@ function clockText(s) {
 }
 
 /** The remembered state, written atomically (temp file, rename), mode 600. */
+/** A saved Spelunkr place, checked (the file is ours, but read it as if it were not). */
+function cleanResume(r) {
+    if (!r || typeof r !== 'object') return null;
+    const num = (x) => (typeof x === 'number' && isFinite(x) && x >= 0 && x < 1e13 ? x : 0);
+    if (typeof r.ch !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(r.ch)) return null;
+    if (typeof r.href !== 'string' || r.href.length > 1000 || !/^https:\/\/[^\s]+$/.test(r.href)) return null;
+    const title = typeof r.title === 'string' ? r.title.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 160) : '';
+    return { ch: r.ch, href: r.href, title, inS: num(r.inS), dur: num(r.dur), posS: num(r.posS), at: num(r.at) };
+}
+
 class Store {
     constructor(dataDir, log) {
         this.file = path.join(dataDir || '.', 'tv-sources.json'); this.log = log;
-        this.data = { v: 1, last: '', channel: '', sources: [] };
+        this.data = { v: 1, last: '', channel: '', sources: [], resume: null };
         this.load();
     }
     load() {
@@ -147,6 +157,7 @@ class Store {
             v: 1, sources,
             last: typeof j.last === 'string' && (j.last === 'spelunkr' || seen[j.last]) ? j.last : '',
             channel: typeof j.channel === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(j.channel) ? j.channel : '',
+            resume: cleanResume(j.resume),
         };
     }
     save() {
@@ -197,6 +208,17 @@ class Store {
         if (durS > 0) s.durS = durS;
         this.save();
     }
+    /**
+     * 0.4.1: where the viewer stopped in a Spelunkr channel ({ ch, href, title, inS, dur, posS }: the
+     * programme, not just the channel), so "Resume where I stopped" survives a restart. null: forget it.
+     */
+    setResume(r) {
+        const c = r ? cleanResume(Object.assign({}, r, { at: Date.now() })) : null;
+        const same = (x) => (x ? JSON.stringify(Object.assign({}, x, { at: 0 })) : 'null');
+        if (same(c) === same(this.data.resume)) return;          // the same place: not written again
+        this.data.resume = c;
+        this.save();
+    }
     setLast(key, channel) {
         let ch = false;
         if (key && this.data.last !== key) { this.data.last = key; ch = true; }
@@ -206,4 +228,4 @@ class Store {
     }
 }
 
-module.exports = { Store, check, checkUrl, cleanName, hostOf, clockText, MAX_NAME, MAX_URL, MAX_SOURCES };
+module.exports = { Store, cleanResume, check, checkUrl, cleanName, hostOf, clockText, MAX_NAME, MAX_URL, MAX_SOURCES };

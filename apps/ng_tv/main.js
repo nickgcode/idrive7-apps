@@ -29,6 +29,20 @@
  * Play in cluster / Play in HUD / HUD test (0.3.x, parked only, each needs two taps; the HUD ones are off
  * again at every start): unchanged. They follow the watching view: on the home screen nothing plays.
  *
+ * 0.4.1, instant resume: when the gate blanks, the player only pauses and keeps its warm state (the
+ * index, the decoder, the samples fetched past it, at most WARM_BYTES, and the next picture); the last
+ * picture stays on the screen, dimmed, under "Video available when parked" (a still image, not video;
+ * the cluster / HUD outputs go at once as before). Back in P for 2 s, the picture continues from the
+ * paused place in about a frame, no tuning. Spelunkr's "After driving" setting: resume where I stopped
+ * (the default) or jump to what's on now (after more than a minute away). The warm state is let go after
+ * WARM_MS out of park or when memory is tight; then the place (programme and second, also kept across
+ * restarts in tv-sources.json) is tuned again exactly. Opening the app goes back to what was watched.
+ *
+ * 0.4.1, the panel test (parked only, two taps, off at every start, 30 s): a still test card over the
+ * whole cluster ("panel" target, tv_cluster.js), "Full cluster test", then "Side panels test" (only after
+ * the full one ran this session). Exactly the HUD test's rules, and one of Cluster video / HUD test /
+ * Play in HUD / panel test at a time (panel and HUD share a scene id anyway).
+ *
  * Full-screen touch app (kit/runtime/fullscreen.js); the HMI's bar buttons and the More menu do the main
  * jobs where the kit can't run the screen. Node 8: no optional chaining, no ?? and no object spread.
  */
@@ -56,7 +70,13 @@ const MAX_KMH = parkedWatch.MAX_KMH;    // 3
 const RESUME_MS = 2000;             // parked this long before the picture comes back
 const ASK_MS = 5000;                // Play in cluster / HUD, HUD test: the second tap that confirms, within this
 const HUD_TEST_MS = Math.min(30000, Number(process.env.GSTV_HUD_TEST_MS) || 30000);
-const RETUNE_MS = 60000;            // blanked longer than this: back to what the channel plays now
+const RETUNE_MS = 60000;            // "jump to what's on now": blanked longer than this, back to what the channel plays now
+const STILL_ID = 2;                 // the dimmed last picture under the parked message (a pixel image)
+const WARM_MS = Math.min(30 * 60000, Number(process.env.GSTV_WARM_MS) || 30 * 60000);   // the warm state, at most this long paused
+const WARM_BYTES = 8 * 1024 * 1024; // fetched samples kept while paused (the keyframe's chunk always)
+const WARM_FREE_MB = 96;            // MemAvailable below this: memory is tight, the warm state goes
+const WARM_RSS_MB = 420;            // or the app itself above this
+const AFTER_NAME = { resume: 'Resume where I stopped', live: 'Jump to what\'s on now' };
 const BANNER_MS = 4000;             // the channel banner after a change
 const CONTROLS_MS = 5000;           // the controls over the picture, after a tap
 const HOLD_MS = 650;                // a held tile: its edit sheet
@@ -148,22 +168,28 @@ mgu.run({
         const handoff = new Handoff(net, log, { relay, mailbox: (ctx.spec.config && ctx.spec.config.mailbox) || 'https://ntfy.sh' });
         const shm = new ShmOut(ctx.spec.id || 'ng_tv', log);
         const img = new ImageOut(VIDEO_ID);
+        const still = new ImageOut(STILL_ID);           // 0.4.1: the last picture, shown dimmed while not parked
         let onSignal = () => {};
         const tapped = tapSignals(ctx, () => onSignal());
         const car = new Car(tapped, ['gear']);
         const parked = parkedWatch.watch(tapped, log);
         const cluster = new ClusterOut({ log, app: ctx.spec.id || 'ng_tv' });
         const hud = new ClusterOut({ log, app: ctx.spec.id || 'ng_tv', target: 'hud' });
-        // the HUD experiment is never on at a start, whatever was saved
-        ['hud', 'hudtest'].forEach((k) => { if (settings.get(k)) settings.set(k, false); });
+        const panel = new ClusterOut({ log, app: ctx.spec.id || 'ng_tv', target: 'panel' });
+        // the HUD experiment and the panel tests are never on at a start, whatever was saved
+        ['hud', 'hudtest', 'paneltest', 'sidetest'].forEach((k) => { if (settings.get(k)) settings.set(k, false); });
 
-        let page = cfg.streamUrl ? 'watch' : 'home';
+        // 0.4.1: opening the app goes back to what was watched last (tuned where it stopped once parked)
+        const lastKey = store.data.last;
+        const reopen = !cfg.streamUrl && (lastKey === 'spelunkr' || (!!lastKey && !!store.get(lastKey)));
+        let page = cfg.streamUrl || reopen ? 'watch' : 'home';
         let setFrom = 'home';               // the page the settings page goes back to
         let toast = null;
         let want = true;                    // the viewer wants it playing (Play / Pause)
         let luState = 'loading', luError = '', luRetry = 0;
         // what is tuned: { kind: 'spelunkr', ch } | { kind: 'custom', id } | { kind: 'stream' } | null
         let src = cfg.streamUrl ? { kind: 'stream' } : null;
+        if (reopen) src = lastKey === 'spelunkr' ? { kind: 'spelunkr', ch: store.data.channel || cfg.channel } : { kind: 'custom', id: lastKey };
         let chId = store.data.channel || cfg.channel;
         let cur = null;                     // { title, year } what plays
         let schErr = '';                    // the tuned channel's schedule could not be had
@@ -176,6 +202,8 @@ mgu.run({
         let gateOpen = false, parkedSince = 0, gatedAt = 0;
         let regGen = -1, regGpu = null;
         let posAt = 0;
+        let warmAt = 0, memAt = 0;          // paused since (the warm state's age), the last memory check
+        let panelRan = false;               // the full cluster test was up once this session
         const say = (text, ms) => { toast = { text, until: Date.now() + (ms || 3000) }; };
         const watching = () => page === 'watch' || page === 'guide' || (page === 'settings' && (setFrom === 'watch' || setFrom === 'guide'));
 
@@ -207,6 +235,7 @@ mgu.run({
             },
         });
         player.on('state', () => {
+            if (player.state === 'paused') { if (!warmAt) warmAt = Date.now(); } else if (player.state !== 'buffering') warmAt = 0;
             if (/^(idle|tuning|paused|offline|error)$/.test(player.state)) {
                 cluster.stop();
                 if (!settings.get('hudtest')) hud.stop();      // the test card does not depend on the player
@@ -239,17 +268,20 @@ mgu.run({
         }
 
         /* ----- tuning ----- */
-        function srcSpel(s, i, offset) {
+        /** exactS: the picture starts at that second of the file (a resume), else at the keyframe before startS */
+        function srcSpel(s, i, offset, exactS, ch) {
             const it = s.items[i];
             return {
                 href: it.href, moov: it.moov, title: it.title, year: it.year,
-                startS: it.inS + (offset || 0), endS: it.duration ? it.inS + it.duration : 0,
-                next: () => { const n = s.next(i); cur = { title: s.items[n].title, year: s.items[n].year }; return srcSpel(s, n, 0); },
+                startS: it.inS + (offset || 0), endS: it.duration ? it.inS + it.duration : 0, exactS: exactS || 0,
+                meta: { kind: 'spelunkr', ch, href: it.href, title: it.title, year: it.year, inS: it.inS, dur: it.duration },
+                next: () => { const n = s.next(i); cur = { title: s.items[n].title, year: s.items[n].year }; return srcSpel(s, n, 0, 0, ch); },
             };
         }
-        function srcCustom(s, fromS) {
+        function srcCustom(s, fromS, exactS) {
             return {
-                href: s.url, moov: 0, title: s.name, year: '', startS: fromS || 0, endS: 0,
+                href: s.url, moov: 0, title: s.name, year: '', startS: fromS || 0, endS: 0, exactS: exactS || 0,
+                meta: { kind: 'custom', id: s.id },
                 next: () => { store.position(s.id, 0, s.durS); return srcCustom(s, 0); },
             };
         }
@@ -258,8 +290,12 @@ mgu.run({
             return { href: cfg.streamUrl, moov: 0, title: clean(file, 80), year: '', startS: 0, endS: 0, next: () => srcStream() };
         }
         const playNow = () => want && gateOpen && watching() && visible();
-        /** (Re)tune what src names: Spelunkr at what the channel plays now, a custom source where it was left. */
-        async function tune() {
+        /**
+         * (Re)tune what src names: Spelunkr at what the channel plays now (with resume: where the viewer
+         * stopped in it, unless "After driving" says what's on now), a custom source where it was left.
+         */
+        async function tune(opts) {
+            const o = opts || {};
             const gen = ++tuneGen;
             savePos();
             if (!src) return;
@@ -274,7 +310,7 @@ mgu.run({
                 const s = store.get(src.id);
                 if (!s) { src = null; player.stop(); return; }
                 cur = { title: s.name };
-                player.tune(srcCustom(s, s.posS > 3 ? s.posS - 2 : 0));
+                player.tune(s.posS > 3 ? srcCustom(s, s.posS, s.posS) : srcCustom(s, 0));
                 return;
             }
             // Spelunkr
@@ -292,23 +328,43 @@ mgu.run({
                 return;
             }
             if (gen !== tuneGen) return;
+            player.paused = !playNow();
+            const rec = store.data.resume;
+            if (o.resume && afterDrive() === 'resume' && rec && rec.ch === id) {
+                let i = -1;
+                for (let k = 0; k < s.items.length; k++) if (s.items[k].href === rec.href) { i = k; break; }
+                const it = i >= 0 ? s.items[i] : null;
+                if (it && rec.posS >= it.inS && (!it.duration || rec.posS < it.inS + it.duration - 5)) {
+                    cur = { title: it.title, year: it.year };
+                    log.info('resume: ' + id + ' "' + it.title + '" at ' + clock(rec.posS - it.inS));
+                    player.tune(srcSpel(s, i, rec.posS - it.inS, rec.posS, id));
+                    return;
+                }
+                if (it) {                                      // it had ended: the next programme from its start
+                    const n = s.next(i);
+                    cur = { title: s.items[n].title, year: s.items[n].year };
+                    player.tune(srcSpel(s, n, 0, 0, id));
+                    return;
+                }
+            }
             const a = s.at(Date.now());
             cur = { title: a.item.title, year: a.item.year };
-            player.paused = !playNow();
-            player.tune(srcSpel(s, a.index, a.offset));
+            player.tune(srcSpel(s, a.index, a.offset, 0, id));
         }
-        function watchSpelunkr(id) {
+        const afterDrive = () => (settings.get('afterDrive') === 'live' ? 'live' : 'resume');
+        /** resume: the Spelunkr tile on Home / reopening (where the viewer stopped); a channel change: what's on */
+        function watchSpelunkr(id, resume) {
             if (id) chId = id;
             src = { kind: 'spelunkr', ch: chId };
             store.setLast('spelunkr', chId);
-            cur = null;
+            cur = null; still.clear();
             showBanner();
-            tune();
+            tune({ resume: !!resume });
         }
         function watchCustom(id) {
             src = { kind: 'custom', id };
             store.setLast(id);
-            cur = null;
+            cur = null; still.clear();
             showBanner();
             tune();
         }
@@ -320,13 +376,18 @@ mgu.run({
         }
         function showBanner() { bannerUntil = Date.now() + BANNER_MS; }
         function showControls() { controlsUntil = Date.now() + CONTROLS_MS; }
+        /** Where the player is, for the programme it plays (src may already name the next one). */
         function savePos() {
-            if (!src || src.kind !== 'custom' || !player.v) return;
+            const m = player.src && player.src.meta;
+            if (!m || !player.v) return;
             const inf = player.info();
             if (!(inf.pos > 0)) return;
             posAt = Date.now();
-            store.position(src.id, inf.pos, inf.end);
+            if (m.kind === 'custom') store.position(m.id, inf.pos, inf.end);
+            else if (m.kind === 'spelunkr') store.setResume({ ch: m.ch, href: m.href, title: m.title + (m.year ? ' (' + m.year + ')' : ''), inS: m.inS, dur: m.dur, posS: inf.pos });
         }
+        /** The Spelunkr programme the player is in, when it is the shown channel's. */
+        const playingSpel = () => { const m = player.src && player.src.meta; return m && m.kind === 'spelunkr' && m.ch === chId && player.v ? m : null; };
         /** A custom source: jump by ds seconds (re-tunes there). */
         function seek(ds) {
             if (!src || src.kind !== 'custom' || !player.v) return;
@@ -335,6 +396,7 @@ mgu.run({
             const inf = player.info(), to = Math.max(0, Math.min((inf.end || 0) - 5, inf.pos + ds));
             store.position(s.id, to, inf.end);
             player.paused = !playNow();
+            still.clear();
             player.tune(srcCustom(s, to));
             showControls();
         }
@@ -360,7 +422,9 @@ mgu.run({
                     log.info('gate: closed (' + g.why + ')');
                     player.pause();
                     blank(g.why);
+                    keepStill();
                     savePos();
+                    player.trim(WARM_BYTES);
                 }
                 return;
             }
@@ -374,24 +438,64 @@ mgu.run({
         function blank(why) {
             cluster.stop();                                    // first: the cluster and HUD pictures go at once
             hud.stop();
+            panel.stop();
             if (settings.get('hudtest')) endHudTest(why || 'hidden');
+            endPanelTests(why || 'hidden');
             img.clear();
             const gpu = ctx.display && ctx.display.gpu;
             if (gpu && gpu.dropVideo) gpu.dropVideo(VIDEO_ID);
             regGpu = null; regGen = -1;
             shm.remove();
         }
+        /** The newest picture, kept for the dimmed screen while not parked (none: none shown). */
+        function keepStill() {
+            const p = player.still();
+            if (p && p.w >= 16 && p.h >= 16) still.write(p); else still.clear();
+        }
+        /**
+         * Back to watching: the warm state continues where it paused (no tuning); without it (let go, or
+         * never there) the place is tuned again exactly. Spelunkr with "jump to what's on now": what the
+         * channel plays now after more than RETUNE_MS away.
+         */
         function resumeOrLive() {
             if (!src) return;
-            if (!player.v || player.state === 'idle' || (gatedAt && Date.now() - gatedAt > RETUNE_MS)) { gatedAt = 0; tune(); return; }
+            const away = gatedAt ? Date.now() - gatedAt : 0;
             gatedAt = 0;
-            player.resume();
+            if (src.kind === 'spelunkr' && afterDrive() === 'live' && away > RETUNE_MS) { dropWarm('jump to what\'s on now', false, true); tune(); return; }
+            if (player.warm() && (!warmAt || Date.now() - warmAt <= WARM_MS)) {
+                log.info('resume: in place at ' + clock(player.now()) + ' (warm, ' + Math.round(player.warmBytes() / 1024) + ' KB)');
+                player.resume();
+                return;
+            }
+            if (player.v && player.state !== 'idle' && player.state !== 'paused') { player.resume(); return; }   // offline / error: it tries again
+            tune({ resume: true });
+        }
+        /** Lets go of the warm state (the place is saved first, for an exact tune later). */
+        function dropWarm(why, all, quiet) {
+            if (!player.v) return;
+            savePos();
+            const pos = player.release(all);
+            warmAt = 0;
+            if (!quiet) log.info('resume: warm state let go (' + why + ') at ' + clock(pos) + '; the place is kept');
+        }
+        function memTight() {
+            let availMb = -1;
+            try {
+                const m = /MemAvailable:\s+(\d+)/.exec(require('fs').readFileSync('/proc/meminfo', 'utf8'));
+                if (m) availMb = Number(m[1]) / 1024;
+            } catch (e) { availMb = -1; }
+            if (availMb < 0) availMb = require('os').freemem() / 1048576;
+            const rssMb = process.memoryUsage().rss / 1048576;
+            const lim = Number(process.env.GSTV_WARM_FREE_MB) || WARM_FREE_MB;
+            return availMb < lim ? 'free memory ' + Math.round(availMb) + ' MB' : rssMb > WARM_RSS_MB ? 'app memory ' + Math.round(rssMb) + ' MB' : '';
         }
         /** Off the watching view (home, add source...): nothing plays, nothing on the cluster / HUD. */
         function leaveWatch(why) {
             player.pause();
             blank(why);
+            keepStill();
             savePos();
+            player.trim(WARM_BYTES);
             gatedAt = gatedAt || Date.now();
         }
         function go(p) {
@@ -410,14 +514,14 @@ mgu.run({
             if (!gateOpen) { say('Video available when parked'); return; }
             if (!src) { openLast(); return; }
             want = !(want && !player.paused);
-            if (want) resumeOrLive(); else { player.pause(); savePos(); }
+            if (want) resumeOrLive(); else { player.pause(); endPanelTests('paused'); savePos(); }
             labels();
         }
         function openLast() {
             const last = store.data.last;
             want = true;
             page = 'watch';
-            if (last && last !== 'spelunkr' && store.get(last)) watchCustom(last); else watchSpelunkr();
+            if (last && last !== 'spelunkr' && store.get(last)) watchCustom(last); else watchSpelunkr(null, true);
         }
         ui.onClick('BTN_PLAY', togglePlay);
         ui.onClick('BTN_CHUP', () => { if (page !== 'watch' || !src) openLast(); else chStep(1); });
@@ -433,14 +537,19 @@ mgu.run({
             cluster: { name: 'Cluster', ask: 'Tap Cluster again to play in the cluster\'s map area (parked only)' },
             hud: { name: 'Play in HUD', ask: 'Tap HUD again to play in the HUD (experiment, parked only)' },
             hudtest: { name: 'HUD test', ask: 'Tap again to show a test card in the HUD for 30 s (parked only)' },
+            paneltest: { name: 'Full cluster test', ask: 'Tap again to show a test card over the whole cluster for 30 s (parked only)' },
+            sidetest: { name: 'Side panels test', ask: 'Tap again to show the side panels test card for 30 s (parked only)' },
         };
-        const asks = { cluster: 0, hud: 0, hudtest: 0 };
+        const asks = { cluster: 0, hud: 0, hudtest: 0, paneltest: 0, sidetest: 0 };
         let okKey = '';
-        let hudTestAt = 0;
+        let hudTestAt = 0, panelTestAt = 0;
+        const SIDE_FIRST = 'Side panels test: run the Full cluster test first';
+        const panelKey = () => (settings.get('paneltest') ? 'paneltest' : settings.get('sidetest') ? 'sidetest' : '');
         const asking = (k) => Date.now() - asks[k] < ASK_MS;
         const askOut = (k) => { asks[k] = Date.now(); say(OUT[k].ask, ASK_MS); };
         function toggleOut(k) {
             if (settings.get(k)) { asks[k] = 0; settings.set(k, false); say(OUT[k].name + ': off'); return; }
+            if (k === 'sidetest' && !panelRan) { say(SIDE_FIRST); return; }
             if (Date.now() - asks[k] > ASK_MS) { askOut(k); return; }
             asks[k] = 0; toast = null;
             okKey = k;
@@ -452,8 +561,24 @@ mgu.run({
             settings.set('hudtest', false);
             say('HUD test: ended (' + why + ')');
         }
+        /** The panel test(s) off now: the layer first. */
+        function endPanelTests(why) {
+            ['paneltest', 'sidetest'].forEach((k) => {
+                if (!settings.get(k)) return;
+                panel.stop();
+                log.info(k + ': off (' + why + ')');
+                settings.set(k, false);
+                say(OUT[k].name + ': ended (' + why + ')');
+            });
+        }
         settings.onChange((key, value) => {
             if (!OUT[key]) return;
+            if (key === 'sidetest' && value && !panelRan) {
+                asks[key] = 0; say(SIDE_FIRST);
+                log.info('sidetest: refused (the full cluster test has not run this session)');
+                settings.set(key, false);
+                return;
+            }
             if (value && okKey !== key) {
                 if (Date.now() - asks[key] > ASK_MS) {
                     askOut(key);
@@ -469,7 +594,11 @@ mgu.run({
                 });
             }
             if (key === 'cluster') cluster.enable(!!value);
-            else {
+            else if (key === 'paneltest' || key === 'sidetest') {
+                if (value) panelTestAt = Date.now();
+                if (!value) panel.stop();
+                panel.enable(!!(settings.get('paneltest') || settings.get('sidetest')));
+            } else {
                 if (key === 'hudtest') hudTestAt = value ? Date.now() : 0;
                 if (!value) hud.stop();
                 hud.enable(!!(settings.get('hud') || settings.get('hudtest')));
@@ -487,6 +616,12 @@ mgu.run({
                 const hs = hud.status(gateOpen, true);
                 return { level: hs.level, text: 'HUD test (' + left + ' s): ' + hs.text };
             }
+            const pk = panelKey();
+            if (pk) {
+                const left = Math.max(0, Math.ceil((HUD_TEST_MS - (Date.now() - panelTestAt)) / 1000));
+                const ps = panel.status(gateOpen, true);
+                return { level: ps.level, text: OUT[pk].name + ' (' + left + ' s): ' + ps.text };
+            }
             return null;
         }
         const outLine = () => { const o = outStatus(gateOpen && want && !player.paused && player.state === 'playing'); return o ? o.text : ''; };
@@ -500,6 +635,7 @@ mgu.run({
             try { savePos(); } catch (e) { /* gone */ }
             try { cluster.close(); } catch (e) { /* gone */ }
             try { hud.close(); } catch (e) { /* gone */ }
+            try { panel.close(); } catch (e) { /* gone */ }
             try { shm.remove(); } catch (e) { /* gone */ }
         };
         process.on('exit', cleanup);
@@ -567,13 +703,28 @@ mgu.run({
                 if (Date.now() - hudTestAt >= HUD_TEST_MS) endHudTest(Math.round(HUD_TEST_MS / 1000) + ' s up');
                 else if (gateOpen && gate().ok && visible()) hud.card();   // once; the card stays until stopped
             }
+            const pk = panelKey();
+            if (pk) {
+                if (Date.now() - panelTestAt >= HUD_TEST_MS) endPanelTests(Math.round(HUD_TEST_MS / 1000) + ' s up');
+                else if (gateOpen && gate().ok && visible()) { if (panel.card(pk === 'paneltest' ? 'full' : 'sides') && pk === 'paneltest') panelRan = true; }
+                else panel.stop();
+            }
+            // the warm state: at most WARM_MS paused, not while memory is tight, at most WARM_BYTES of samples
+            if (player.v && player.paused && warmAt) {
+                if (Date.now() - warmAt > WARM_MS) dropWarm(Math.round(WARM_MS / 60000) + ' min paused');
+                else if (Date.now() - memAt > 5000) {
+                    memAt = Date.now();
+                    const tight = memTight();
+                    if (tight) dropWarm(tight, true); else player.trim(WARM_BYTES);
+                }
+            }
             const cl = outLine();
             if (cl !== clusterShown) { clusterShown = cl; labels(); }
             if (luState !== 'ok' && luState !== 'loading' && Date.now() >= luRetry && visible()) {
-                if (src && src.kind === 'spelunkr' && watching() && gateOpen && want) tune(); else if (!watching()) loadLineup();
+                if (src && src.kind === 'spelunkr' && watching() && gateOpen && want) tune({ resume: true }); else if (!watching()) loadLineup();
             }
-            if (src && src.kind === 'spelunkr' && schErr && luState === 'ok' && watching() && gateOpen && want && Date.now() >= luRetry) { luRetry = Date.now() + 10000; tune(); }
-            if (src && src.kind === 'custom' && player.state === 'playing' && Date.now() - posAt > POS_MS) savePos();
+            if (src && src.kind === 'spelunkr' && schErr && luState === 'ok' && watching() && gateOpen && want && Date.now() >= luRetry) { luRetry = Date.now() + 10000; tune({ resume: true }); }
+            if (player.src && player.src.meta && player.state === 'playing' && Date.now() - posAt > POS_MS) savePos();
             if (page === 'add' && handoff.active()) {
                 if (handoff.expired()) { handoff.start(handoff.s.mode); qrPic = null; }
                 else handoff.tick().then((got) => { if (got && page === 'add') received(got); }, (e) => log.warn('handoff: ' + e.message));
@@ -585,7 +736,7 @@ mgu.run({
         const shown = {};
         const label = (n, s) => { if (shown[n] !== s) { shown[n] = s; ui.text(n, s); } };
         function statusLine() {
-            if (!lastGate.ok) return 'Video available when parked (' + lastGate.why + ')';
+            if (!lastGate.ok) return 'Video available when parked (' + lastGate.why + ')' + (player.warm() ? ' - resumes where you stopped' : '');
             if (!src) return 'Press Play to watch, or pick a source on the home screen';
             if (src.kind === 'spelunkr') {
                 if (luState === 'loading') return 'Loading the channels...';
@@ -691,7 +842,7 @@ mgu.run({
                 want = true;
                 page = 'watch'; edit = null;
                 showControls();
-                if (hit.kind === 'spelunkr') watchSpelunkr(); else watchCustom(hit.id);
+                if (hit.kind === 'spelunkr') watchSpelunkr(null, true); else watchCustom(hit.id);
             }
         });
 
@@ -783,7 +934,23 @@ mgu.run({
             if (vh > r.h) { vh = r.h; vw = Math.round(vh * asp); }
             const vx = r.x + Math.round((r.w - vw) / 2), vy = r.y + Math.round((r.h - vh) / 2);
             const playingPic = gateOpen && want && !player.paused;
-            if (!g.ok || !gateOpen) { drawGate(cv, t, r.x, r.y, r.w, r.h, g); return; }
+            // the last picture (still, not video), placed like the picture, at its own aspect
+            const stillAt = () => {
+                const sa = still.w / still.h;
+                let sw = r.w, sh = Math.round(sw / sa);
+                if (sh > r.h) { sh = r.h; sw = Math.round(sh * sa); }
+                cv.image(STILL_ID, r.x + Math.round((r.w - sw) / 2), r.y + Math.round((r.h - sh) / 2), sw, sh);
+            };
+            if (!g.ok || !gateOpen) {
+                if (still.has && still.w && still.h) {
+                    stillAt();
+                    cv.fillRect(r.x, r.y, r.w, r.h, '#000000b4');     // dimmed
+                    drawGate(cv, t, r.x, r.y, r.w, r.h, g, true);
+                } else drawGate(cv, t, r.x, r.y, r.w, r.h, g);
+                return;
+            }
+            const live = (videoPath() && shm.fd !== null && playingPic) || (img.has && (playingPic || player.state === 'paused'));
+            if (!live && still.has && still.w && still.h) stillAt();                // back in P: until the first new picture
             if (videoPath() && shm.fd !== null && playingPic) {
                 const gpu = ctx.display.gpu;
                 if (regGpu !== gpu || regGen !== shm.gen) { if (gpu.video(VIDEO_ID, shm.file)) { regGpu = gpu; regGen = shm.gen; } }
@@ -795,8 +962,8 @@ mgu.run({
                 cv.text(fit(cv, s, 28, r.w - 60, { font: 'bold' }), r.x + r.w / 2, r.y + r.h / 2 + 10, 28, bad ? t.crit : t.dim, { align: 'center', font: 'bold', literal: true });
             }
         }
-        function drawGate(cv, t, x, y, w, h, g) {
-            cv.roundRect(x, y, w, h, 10, t.panelBottom || '#101014');
+        function drawGate(cv, t, x, y, w, h, g, over) {
+            if (!over) cv.roundRect(x, y, w, h, 10, t.panelBottom || '#101014');
             const cx = x + w / 2, cy = y + h / 2 - 40;
             cv.circle(cx, cy, 52, G.withAlpha(t.accent2 || t.accent, 0.18));
             cv.strokeRoundRect(cx - 52, cy - 52, 104, 104, 52, 3, t.accent2 || t.accent);
@@ -913,7 +1080,14 @@ mgu.run({
             cv.text(fit(cv, head, 16, W - 220, { font: 'bold', spacing: 2 }), X, y + 30, 16, on, { font: 'bold', spacing: 2, literal: true });
             cv.text('VIDEO ONLY \u00b7 NO SOUND', right, y + 30, 13, '#ffcc33', { font: 'bold', spacing: 1, align: 'right', literal: true });
             let title = cur ? cur.title : '', frac = 0, left = '', next = '';
-            if (spel) {
+            const pm = spel ? playingSpel() : null;
+            if (pm) {
+                // what the player is in (after a resume that can be behind what the channel plays now)
+                const n = nowOn(chId), pos = player.info().pos, behind = n && (n.item.href !== pm.href || Math.abs(pos - (pm.inS + n.offset)) > 60);
+                title = pm.title + (pm.year ? ' (' + pm.year + ')' : '');
+                if (pm.dur > 0) { frac = (pos - pm.inS) / pm.dur; left = mins((pm.inS + pm.dur - pos) * 1000) + ' left'; }
+                next = behind ? 'Resumed where you stopped \u00b7 on now: ' + n.item.title : n && n.next ? 'Next: ' + n.next.title : '';
+            } else if (spel) {
                 const n = nowOn(chId);
                 if (n) {
                     title = n.item.title + (n.item.year ? ' (' + n.item.year + ')' : '');
@@ -1008,8 +1182,15 @@ mgu.run({
                 if (!n) ensureSched(c.id);
                 const yy = r.y + r.h - 70;
                 cv.text('RESUME', X, yy - 26, 14, on, { font: 'bold', spacing: 2, literal: true });
+                const rec = store.data.resume;
+                if (rec && rec.ch === c.id && afterDrive() === 'resume' && rec.title) {
+                    // where the viewer stopped (what the tile's tap goes back to)
+                    cv.text(fit(cv, rec.title, 24, W), X, yy + 4, 24, t.text, { literal: true });
+                    if (rec.dur > 0) { progress(cv, t, X, yy + 22, W - 130, (rec.posS - rec.inS) / rec.dur, on); cv.text(mins((rec.inS + rec.dur - rec.posS) * 1000) + ' left', X + W, yy + 31, 17, t.dim, { align: 'right', literal: true }); }
+                } else {
                 cv.text(fit(cv, n ? n.item.title : 'What\'s on now', 24, W), X, yy + 4, 24, t.text, { literal: true });
                 if (n) { progress(cv, t, X, yy + 22, W - 130, (Date.now() - n.startMs) / (n.endMs - n.startMs), on); cv.text(mins(n.endMs - Date.now()) + ' left', X + W, yy + 31, 17, t.dim, { align: 'right', literal: true }); }
+                }
             } else {
                 cv.text(fit(cv, luState === 'loading' ? 'Loading the channels...' : luState === 'ok' ? 'Pick a channel' : statusLine(), 24, W), X, r.y + r.h / 2, 24, t.text, { literal: true });
             }
@@ -1247,9 +1428,12 @@ mgu.run({
             ['maxFps', 'At most (GPU video)', (v) => v + ' fps'],
             ['theme', 'Colours', (v) => THEME_NAME[v] || v],
             ['renderer', 'Renderer', (v) => (v === 'software' ? 'Software (fallback)' : 'GPU')],
+            ['afterDrive', 'After driving (Spelunkr)', (v) => AFTER_NAME[v] || AFTER_NAME.resume],
             ['cluster', 'Play in cluster (parked)', (v) => (v ? 'On' : 'Off')],
             ['hudtest', 'HUD test (30 s, parked)', (v) => (v ? 'On' : 'Off')],
             ['hud', 'Play in HUD (parked, experiment)', (v) => (v ? 'On' : 'Off')],
+            ['paneltest', 'Full cluster test (30 s, parked)', (v) => (v ? 'On' : 'Off')],
+            ['sidetest', 'Side panels test (30 s, parked)', (v) => (v ? 'On' : panelRan ? 'Off' : 'After the full test')],
         ];
         function drawSettings(cv, t, A) {
             const on = t.accent2 || t.accent, hy = A.y, cyH = hy + HEAD_H / 2;
@@ -1271,7 +1455,7 @@ mgu.run({
                 ['Decoder', inf.decMs ? 'WebAssembly, ' + inf.decMs.toFixed(1) + ' ms a picture' + (inf.light ? ' (light)' : '') : 'WebAssembly (FFmpeg H.264)'],
                 ['Output', pathName()],
                 ['Cluster', settings.get('cluster') ? cluster.status(gateOpen, gateOpen && player.state === 'playing').text : 'Off (Play in cluster)'],
-                ['HUD', settings.get('hud') || settings.get('hudtest') ? outLine() : 'Off (HUD test, Play in HUD)'],
+                ['HUD', settings.get('hud') || settings.get('hudtest') || panelKey() ? outLine() : 'Off (HUD test, Play in HUD, panel tests)'],
                 ['Sound', 'None yet: no verified way for an app to play audio'],
                 ['Sources', 'Spelunkr: the Internet Archive, no DRM. Mine: ' + store.list().length + ' of ' + Src.MAX_SOURCES],
             ];
@@ -1282,21 +1466,25 @@ mgu.run({
                 y += 46;
             });
             lbl('Settings', rx, top + 20);
-            const nr = SET_ROWS.length, rgap = 12, rh = Math.min(96, (A.bottom - (top + 36) - (nr - 1) * rgap) / nr);
+            // two columns of rows (0.4.1: ten settings)
+            const cols = 2, per = Math.ceil(SET_ROWS.length / cols), cg = 12, cw = (colW - cg) / cols;
+            const rgap = 10, rh = Math.min(96, (A.bottom - (top + 36) - (per - 1) * rgap) / per);
             SET_ROWS.forEach((r, i) => {
-                const yy = top + 36 + i * (rh + rgap), key = 'set:' + r[0];
-                plate(cv, t, rx, yy, colW, rh, false, isDown(key));
-                cv.text(r[1].toUpperCase(), rx + 20, yy + rh / 2 - 6, 15, t.dim, { font: 'bold', spacing: 1.5, literal: true });
+                const cx = rx + Math.floor(i / per) * (cw + cg), yy = top + 36 + (i % per) * (rh + rgap), key = 'set:' + r[0];
+                plate(cv, t, cx, yy, cw, rh, false, isDown(key));
+                cv.text(fit(cv, r[1].toUpperCase(), 14, cw - 32, { font: 'bold', spacing: 1.2 }), cx + 16, yy + rh / 2 - 6, 14, t.dim, { font: 'bold', spacing: 1.2, literal: true });
                 const ask = !!OUT[r[0]] && asking(r[0]);
-                cv.text(ask ? 'Tap again to turn on' : r[2](settings.get(r[0])), rx + 20, yy + rh / 2 + 22, 24, ask ? '#ffcc33' : t.text, { font: 'bold', literal: true });
-                FS.button(cv, key, rx, yy, colW, rh, () => { downKey = key; downAt = Date.now(); if (OUT[r[0]]) toggleOut(r[0]); else settings.cycle(r[0]); }, { slop: 6, r: 14 });
+                const off = r[0] === 'sidetest' && !panelRan && !settings.get(r[0]);
+                cv.text(fit(cv, ask ? 'Tap again to turn on' : r[2](settings.get(r[0])), 22, cw - 32, { font: 'bold' }), cx + 16, yy + rh / 2 + 20, 22, ask ? '#ffcc33' : off ? t.dim : t.text, { font: 'bold', literal: true });
+                FS.button(cv, key, cx, yy, cw, rh, () => { downKey = key; downAt = Date.now(); if (OUT[r[0]]) toggleOut(r[0]); else settings.cycle(r[0]); }, { slop: 4, r: 14 });
             });
         }
 
         // start: the home screen (or, with a test streamUrl in tv.json, that stream); the picture once the gate opens
         player.paused = true;
-        loadLineup().then(() => { if (src && src.kind === 'spelunkr' && watching() && gateOpen && want) tune(); });
+        loadLineup().then(() => { if (src && src.kind === 'spelunkr' && watching() && gateOpen && want) tune({ resume: true }); });
         gateStep();
-        if (src && gateOpen && want && visible() && watching() && player.state === 'idle') tune();
+        if (src && gateOpen && want && visible() && watching() && player.state === 'idle') tune({ resume: true });
+        if (reopen) log.info('start: back to ' + (src.kind === 'spelunkr' ? 'Spelunkr ' + src.ch : 'my source') + ' (resumes once parked)');
     },
 });
