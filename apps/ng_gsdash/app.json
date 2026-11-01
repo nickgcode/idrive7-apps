@@ -1,8 +1,8 @@
 {
   "id": "ng_gsdash",
   "title": "G's Dash",
-  "description": "Driver display and car hub in nine looks (Simple, M Style, GT, Heritage, Flight, Digital '84, Sim Racing, Lumen, Pixel). Swipe between Showcase (the car, Spotify or a clock), Drive (opens first; shift lights, gear, rpm, speed, g-meter, drive mode badge, oil / coolant in °F or the fuel level), Warm-up (warm-up rev limit), G-force (peak hold) and Tires (TPMS). Optional Spotify panel (art, previous / play-pause / next, seek; own QR sign-in, Spotify Premium and mgu-uplink internet). Optional CarPlay map in the cluster: CarPlay's map on the instrument cluster through the separately installed Waze on cluster tool (off unless installed and turned on). Cluster logo setting: while open, the G's Dash logo in the cluster's centre map area unless route guidance runs (over Waze's map too; it steps aside only for the car's navigation, CarPlay or Android Auto route guidance, and for G's TV; with no route signal from the car it stays shown), through the separately installed Cluster renderer tool (on by default; nothing happens without the tool)",
-  "version": "0.7.5",
+  "description": "Driver display and car hub in nine looks (Simple, M Style, GT, Heritage, Flight, Digital '84, Sim Racing, Lumen, Pixel). Swipe between Showcase (the car, Spotify or a clock), Drive (opens first; shift lights, gear, rpm, speed, g-meter, drive mode badge, oil / coolant in °F or the fuel level), Warm-up (warm-up rev limit), G-force (peak hold) and Tires (TPMS). Optional Spotify panel (art, previous / play-pause / next, seek; own QR sign-in, Spotify Premium and mgu-uplink internet). Optional CarPlay map in the cluster: CarPlay's map on the instrument cluster through the separately installed Waze on cluster tool (off unless installed and turned on). Cluster logo setting: while open, the G's Dash logo in the cluster's centre map area unless route guidance runs (over Waze's map too; it steps aside only for the car's navigation, CarPlay or Android Auto route guidance, and for G's TV; with no route signal from the car it stays shown), through the separately installed Cluster renderer tool (on by default; nothing happens without the tool). Cluster skins (0.8.0): parked in P / N with the cluster in its Sport layout, the cluster's own dials redrawn in the G's Dash look (telltales stay on top; stock again as soon as you drive off), and Options > Refresh cluster to remake G's Dash's cluster layers",
+  "version": "0.8.0",
   "vendor": "ng",
   "loggingId": "OAN1",
   "iconGlyph": "gauge",
@@ -117,6 +117,8 @@
     {"key": "bars", "label": "Bottom bars", "type": "choice", "default": "temps",
      "options": [["temps", "Oil & coolant"], ["fuel", "Fuel"]]},
     {"key": "clusterLogo", "label": "Logo in cluster when not navigating", "type": "choice", "default": "on",
+     "options": [["on", "On"], ["off", "Off"]]},
+    {"key": "clusterSkin", "label": "Cluster skins (parked, Sport layout)", "type": "choice", "default": "on",
      "options": [["on", "On"], ["off", "Off"]]}
   ],
   "retiredSettings": ["demo", "layout", "renderer", "speedUnit", "spotifyPoll", "showBadge", "lights", "theme"]

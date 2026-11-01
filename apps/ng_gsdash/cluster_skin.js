@@ -1,0 +1,367 @@
+'use strict';
+/**
+ * cluster_skin.js - G's Dash 0.8.0's cluster skins: the instrument cluster's own dials redrawn in the
+ * G's Dash look (all ten: Stock, Simple, M Style, GT, Heritage, Flight, Digital '84, Sim Racing, Lumen,
+ * Pixel), through the separately installed Cluster renderer tool (the client as cluster_logo.js loads
+ * it). Showcase only: while G's Dash is open, the setting "clusterSkin" is on, the cluster shows its
+ * Sport layout (the only one measured: driveMode SPORT) and the car stands still in P / N. Anything
+ * else (moving, a gear in, another layout, no speed signal, an error, another app drawing on the panel)
+ * and the stock dials are back within a second.
+ *
+ * The layers: two "effect" layers on the "panel" target (1920x720: drawn over the stock gauges and under
+ * the stock telltales, which stay on top), one a side, REGION_W x REGION_H at x 0 / 1060, y 24 (the
+ * centre, the map area with the G logo or Waze, and the bottom strip are left alone), class "content"
+ * at z SKIN_Z (90: under G's TV's 100), never exclusive, never contending (the panel's scene is the
+ * HUD's too: never taken from it), never "alert", never the HUD. The art leaves the stock speed-limit
+ * box, AUTO H, PARK and the bottom strip out (skin_core.js CUTS). Each layer runs the look's fragment
+ * shader (skin_core.fragment) over four assets (skin_core.js header): the field (once a connection),
+ * the look's art, band and glyph cells (once a look); per frame only a few uniforms, and only when a
+ * value changed (UNIFORM_MS at most).
+ *
+ * Fail-safe: the layers' alpha is the uniform u_fresh, 0 as the client sets it; a renderer animation
+ * holds it at 1 for FRESH_HOLD ms and then takes it to 0, re-armed every REARM_MS while everything is
+ * as it should be. G's Dash stopping, hanging or losing its connection: the skins fade by themselves
+ * within a second, on the cluster's clock. A condition failing: visible 0 at once.
+ *
+ * Modes (the hidden diagnostics page, parked only): 'skin' (the look), 'align' (the alignment card:
+ * a 1 px outline of the measured geometry, to photograph against the stock dials), 'stock' (the Stock
+ * redraw, whatever the look). Never throws, never blocks. Node 8: no ?., ?? or object spread.
+ */
+const SK = require('./skin_core');
+const ASSETS = require('./skin_assets');
+const META = require('./skin_looks');
+const CL = require('./cluster_logo');
+
+const TARGET = 'panel', KLASS = 'content', SKIN_Z = 90;
+const SPEED_IFACE = 'de.bmw.infotainment.vehicle.Vehicle2';
+const LAYOUT = 'SPORT';                                  // the cluster layout the geometry was measured on
+const PARKED_KMH = 1;
+const POLL_MS = 1000, PUMP_MS = 66, REARM_MS = 300, FRESH_HOLD = 700, FRESH_FADE = 200, STALE_MS = 600;
+const HOLD_MS = 3000, RECONNECT_MS = 8000, LOAD_RETRY_MS = 30000, ERR_RETRIES = 3;
+/** G's Dash's look ids -> the skin's (skin_looks.js) */
+const LOOK_SKIN = { simple: 'simple', m: 'm', gt: 'gt', heritage: 'heritage', flight: 'flight', digital: 'digital', simracing: 'simracing', lumen: 'lumen', pixel: 'pixel' };
+
+/** Other apps' layers on the panel or the HUD in a status text (same lines as cluster_logo.js reads). */
+function panelLayers(text, ownApp) {
+    const out = [];
+    String(text || '').split('\n').forEach((line) => {
+        const m = /^layer (\d+) (\w+) of (\S+) on (\w+), (\w+) z (-?\d+): (\w+)/.exec(line);
+        if (!m || (m[4] !== 'panel' && m[4] !== 'hud')) return;
+        out.push({ id: +m[1], kind: m[2], app: m[3], target: m[4], klass: m[5], z: +m[6], state: m[7], own: m[3] === ownApp });
+    });
+    return out;
+}
+
+/**
+ * Whether the skin may show, from main.js's state: { on, enabled, look, mode, data (car.data()),
+ * speedAvail, fuel (fuel.state()), gear (L.gearText) } -> '' (yes) or why not.
+ */
+function blocker(s) {
+    if (!s || !s.on) return 'closed';
+    if (s.enabled === false) return 'off';
+    const d = s.data || {};
+    if (d.demo) return 'demo data';
+    if (!s.speedAvail || !SK.isNum(d.speed)) return 'no speed signal';
+    if (d.speed >= PARKED_KMH) return 'moving';
+    if (d.stage === 'D' || d.stage === 'R' || (SK.isNum(d.gear) && (d.gear > 0 || d.gear === -1) && !d.gearGuessed)) return 'in gear';
+    if (d.driveMode !== LAYOUT) return 'not Sport';
+    return '';
+}
+/** main.js's state -> the shader's values: speed mph, rpm, fuel 0..1, oil °F (null: unknown), gear */
+function values(s) {
+    const d = (s && s.data) || {}, f = s && s.fuel;
+    return {
+        speed: SK.isNum(d.speed) ? d.speed / 1.609344 : null,
+        rpm: SK.isNum(d.rpm) ? d.rpm : null,
+        fuel: f && SK.isNum(f.pct) ? f.pct / 100 : null,
+        oil: SK.isNum(d.oil) ? d.oil * 9 / 5 + 32 : null,
+        gear: s && s.gear ? String(s.gear) : '-',
+    };
+}
+const toBuf = (u8) => Buffer.from(u8.buffer, u8.byteOffset, u8.length);
+
+class ClusterSkin {
+    /**
+     * opts: log, app ('ng_gsdash'), load(file) -> { w, h, data } (a decoded PNG of the app's), client /
+     * sock / testing (tests), now(), timers ({ setInterval, clearInterval }).
+     */
+    constructor(opts) {
+        const o = opts || {};
+        this.o = o;
+        this.log = o.log || { info() {}, warn() {} };
+        this.app = o.app || 'ng_gsdash';
+        this.now = o.now || Date.now;
+        this.T = o.timers || { setInterval, clearInterval };
+        this.st = null; this.stAt = -1e15; this.want = false; this.why = 'closed';
+        this.err = null; this.errAt = -1e15;
+        this.cache = { id: '', tex: null };
+        this.stats = { connects: 0, layers: 0, assets: 0, bytes: 0, uniforms: 0, rearms: 0, drops: 0, refreshes: 0 };
+        this._reset();
+    }
+    _reset() {
+        this.cr = null; this.ready = false; this.polled = false;
+        this.field = null;                        // { L, R } asset refs, once a connection
+        this.cur = null;                          // { id, assets: [...], L: { ref, anim, sent }, R }
+        this.visible = false; this.lastRearm = -1e15; this.lastPump = -1e15;
+        this.others = []; this.busyAt = -1e15; this.layerErr = ''; this.errCount = 0; this.refused = ''; this.noEffect = false;
+        this.poll = null; this.pump = null; this.downAt = this.now();
+    }
+
+    /**
+     * From G's Dash's loop (and its visibility / setting handlers): { on (open, the setting on), enabled,
+     * look (the G's Dash look id), mode ('skin' | 'align' | 'stock'), data, speedAvail, fuel, gear }.
+     */
+    update(s) {
+        this.st = s || {}; this.stAt = this.now();
+        const on = !!(s && s.on && s.enabled !== false);
+        if (!on) { if (this.cr) this._off(); this.want = false; this.why = blocker(s); return; }
+        this.want = true;
+        if (!this.cr) this._connect();
+        this._apply();
+    }
+    lookId() {
+        const s = this.st || {};
+        if (s.mode === 'align') return 'align';
+        if (s.mode === 'stock') return 'stock';
+        return LOOK_SKIN[s.look] || 'simple';
+    }
+
+    _connect() {
+        const now = this.now();
+        if (this.err && now - this.errAt < LOAD_RETRY_MS) return;
+        const c = CL.loadClient(this.o);
+        if (c.error) {
+            if (!this.err || this.err.error !== c.error) this.log.warn('cluster skin: ' + c.text);
+            this.err = c; this.errAt = now;
+            return;
+        }
+        this.err = null;
+        const cr = this.cr = new c.ClusterRender(this.app, c.sock);
+        this.stats.connects++;
+        cr.on('ready', () => { if (this.cr !== cr) return; this.ready = true; this.log.info('cluster skin: connected'); this._ask(); });
+        cr.on('disconnected', () => {
+            if (this.cr !== cr) return;
+            // the service removes a closed client's layers; the dead-man fades ours meanwhile. Made again
+            // whole on the next connection (the client's own reconnect, or ours after RECONNECT_MS).
+            this.ready = false; this.polled = false; this.downAt = this.now();
+            this.log.info('cluster skin: disconnected');
+        });
+        cr.on('layer', (ref, state, reason) => {
+            if (this.cr !== cr || !this.cur) return;
+            if ((this.cur.L && ref === this.cur.L.ref) || (this.cur.R && ref === this.cur.R.ref)) {
+                if (state === 'error') { this.layerErr = reason || 'error'; this.log.warn('cluster skin: layer error' + (reason ? ' (' + reason + ')' : '')); this._hide('layer error'); }
+            }
+        });
+        cr.on('refused', (op, ref, reason) => {
+            if (this.cr !== cr) return;
+            this.refused = (op || '?') + ': ' + (reason || '?');
+            this.log.warn('cluster skin: refused ' + this.refused);
+            // one of ours refused (a shader that did not compile, an asset over a limit): stock, retried
+            if (this.cur && (ref === (this.cur.L && this.cur.L.ref) || ref === (this.cur.R && this.cur.R.ref) || this.cur.assets.indexOf(ref) >= 0)) { this.layerErr = this.refused; this._hide('refused'); }
+        });
+        cr.on('status', (text) => {
+            if (this.cr !== cr) return;
+            const now = this.now();
+            const others = panelLayers(text, this.app).filter((l) => !l.own && (l.state === 'shown' || l.state === 'waiting' || l.state === 'suspended'));
+            if (others.length) this.busyAt = now;
+            const was = this.others.map((l) => l.app).join(','), is = others.map((l) => l.app).join(',');
+            if (was !== is) this.log.info('cluster skin: panel ' + (is ? 'in use by ' + is : 'free of other apps'));
+            this.others = others;
+            this.polled = true;
+            this._apply();
+        });
+        this.downAt = this.now();
+        this.poll = this.T.setInterval(() => this._tick(), POLL_MS);
+        this.pump = this.T.setInterval(() => this._pump(), PUMP_MS);
+        try { cr.connect(); } catch (e) { this.log.warn('cluster skin: connect ' + e.message); }
+    }
+    _ask() { if (this.cr && this.ready) { try { this.cr.status(); } catch (e) { /* next poll */ } } }
+    _tick() {
+        if (!this.want || !this.cr) return;
+        if (!this.ready) {
+            if (this.now() - this.downAt >= RECONNECT_MS) this._restart('not connected for ' + Math.round((this.now() - this.downAt) / 1000) + ' s');
+            return;
+        }
+        this._ask();
+        if (this.layerErr && this.errCount < ERR_RETRIES) {
+            this.errCount++; this.layerErr = '';
+            this.log.info('cluster skin: making the layers again (' + this.errCount + ' of ' + ERR_RETRIES + ')');
+            this._dropLook();
+            this._apply();
+        }
+    }
+
+    /** '' if the skin may show now, else why not (the Options line says it). */
+    _why() {
+        const now = this.now();
+        const b = blocker(this.st);
+        if (b) return b;
+        if (now - this.stAt > STALE_MS) return 'no update';
+        if (this.others.length) return 'panel in use';
+        if (now - this.busyAt < HOLD_MS) return 'panel in use';
+        if (this.layerErr || this.noEffect) return 'renderer error';
+        return '';
+    }
+    _apply() {
+        if (!this.want || !this.cr || !this.ready || !this.polled) return;
+        const why = this._why();
+        this.why = why;
+        if (why) { this._hide(why); return; }
+        const id = this.lookId();
+        if (!this.cur || this.cur.id !== id) {
+            let ok = false;
+            try { ok = this._make(id); } catch (e) { this.log.warn('cluster skin: ' + (e.stack || e)); this.layerErr = 'make: ' + e.message; }
+            if (!ok) { this._hide('assets'); return; }
+        }
+        if (!this.visible) {
+            this._uniforms(true);
+            this._rearm(true);
+            ['L', 'R'].forEach((s) => { this.cr.set(this.cur[s].ref, { visible: true }); });
+            this.visible = true;
+            this.log.info('cluster skin: ' + id + ' shown');
+        }
+    }
+    _hide(why) {
+        if (!this.visible || !this.cur || !this.cr) { this.visible = false; return; }
+        ['L', 'R'].forEach((s) => { try { this.cr.set(this.cur[s].ref, { visible: false }); } catch (e) { /* gone */ } });
+        this.visible = false;
+        this.log.info('cluster skin: hidden (' + why + ')');
+    }
+    /** Every PUMP_MS while connected: conditions again (so a stale loop hides it), uniforms, the dead-man. */
+    _pump() {
+        if (!this.want || !this.cr || !this.ready) return;
+        if (this.visible && this._why()) { this._apply(); return; }
+        if (!this.visible) return;
+        this._uniforms(false);
+        if (this.now() - this.lastRearm >= REARM_MS) this._rearm(false);
+    }
+    /** u_fresh: 1 for FRESH_HOLD ms, then down to 0 in FRESH_FADE, on the renderer's clock; replaced each time */
+    _rearm() {
+        const cr = this.cr;
+        ['L', 'R'].forEach((s) => {
+            const L = this.cur[s];
+            if (L.anim && typeof cr.stop === 'function') { try { cr.stop(L.ref, L.anim); } catch (e) { /* gone */ } }
+            L.anim = cr.animate(L.ref, { property: 'uniform', name: 'u_fresh', keys: '0:1 ' + FRESH_HOLD + ':1 ' + (FRESH_HOLD + FRESH_FADE) + ':0', loop: false, interp: 'linear' }) || 0;
+        });
+        this.lastRearm = this.now(); this.stats.rearms++;
+    }
+    _uniforms(all) {
+        const v = values(this.st), meta = this.cur.meta;
+        ['L', 'R'].forEach((s) => {
+            const L = this.cur[s], u = SK.uniforms(meta, s, v);
+            Object.keys(u).forEach((k) => {
+                const key = u[k].join(',');
+                if (!all && L.sent[k] === key) return;
+                L.sent[k] = key;
+                this.cr.uniform(L.ref, k, u[k]); this.stats.uniforms++;
+            });
+        });
+        this.lastPump = this.now();
+    }
+
+    /** The look's assets and two layers (hidden); the old look's go after. false: could not. */
+    _make(id) {
+        const cr = this.cr, meta = META.looks[id];
+        if (!meta) return false;
+        // an older Cluster renderer tool: no effect layers; the skins stay off (the logo is not affected)
+        if (['effect', 'asset', 'bind', 'uniform', 'animate'].some((k) => typeof cr[k] !== 'function')) {
+            if (!this.noEffect) this.log.warn('cluster skin: this Cluster renderer has no effect layers');
+            this.noEffect = true; return false;
+        }
+        let tex;
+        try {
+            if (this.cache.id !== id) { this.cache = { id, tex: ASSETS.slice(meta, this.o.load(meta.file)) }; }
+            tex = this.cache.tex;
+            if (!this.field) {
+                const f = ASSETS.sliceField(this.o.load(META.field.file)), refs = {};
+                ['L', 'R'].forEach((s) => { refs[s] = this._asset(f[s]); });
+                if (!refs.L || !refs.R) return false;
+                this.field = refs;
+            }
+        } catch (e) { this.log.warn('cluster skin: ' + id + ' assets: ' + e.message); return false; }
+        const old = this.cur, cur = { id, meta, assets: [] };
+        for (let i = 0; i < 2; i++) {
+            const s = i ? 'R' : 'L', S = SK.SIDES[s];
+            const art = this._asset(tex.art[s]), band = this._asset(tex.band[s]), glyph = this._asset(tex.glyph[s]);
+            [art, band, glyph].forEach((r) => { if (r) cur.assets.push(r); });
+            if (!art || !band || !glyph) { this._dropAll(cur); return false; }
+            const ref = cr.effect({ target: TARGET, klass: KLASS, z: SKIN_Z, exclusive: false, contend: false, visible: false,
+                x: S.x, y: S.y, w: S.w, h: S.h, fs: SK.fragment(meta, s) });
+            if (!ref) { this.log.warn('cluster skin: effect layer refused by the client'); this._dropAll(cur); return false; }
+            cur[s] = { ref, anim: 0, sent: {} };
+            cr.bind(ref, 'u_field', this.field[s]); cr.bind(ref, 'u_art', art); cr.bind(ref, 'u_band', band); cr.bind(ref, 'u_glyph', glyph);
+            cr.uniform(ref, 'u_fresh', [0]);
+            this.stats.layers++;
+        }
+        this.cur = cur; this.visible = false;
+        if (old) this._dropAll(old);
+        this.log.info('cluster skin: ' + id + ' made (' + Math.round(this.stats.bytes / 1024) + ' KB sent this run)');
+        return true;
+    }
+    _asset(t) {
+        const ref = this.cr.asset({ target: TARGET, format: 'rgba8', w: t.w, h: t.h, sampling: 'nearest' });
+        if (!ref) { this.log.warn('cluster skin: asset ' + t.w + 'x' + t.h + ' refused by the client'); return 0; }
+        this.cr.pixels(ref, null, toBuf(t.data));
+        this.stats.assets++; this.stats.bytes += t.data.length;
+        return ref;
+    }
+    /** layers first (a bound asset is not dropped), then their assets */
+    _dropAll(cur) {
+        const cr = this.cr;
+        if (!cr || !cur) return;
+        ['L', 'R'].forEach((s) => { if (cur[s] && cur[s].ref) { try { cr.drop(cur[s].ref); this.stats.drops++; } catch (e) { /* gone */ } } });
+        cur.assets.forEach((r) => { try { cr.drop(r); this.stats.drops++; } catch (e) { /* gone */ } });
+    }
+    _dropLook() { if (this.cur) { this._dropAll(this.cur); this.cur = null; this.visible = false; } }
+
+    _restart(why) {
+        this.log.info('cluster skin: reconnecting (' + why + ')');
+        this._off();
+        if (this.want) { this._connect(); this._apply(); }
+    }
+    /** Options > Refresh cluster: every layer and asset dropped and made again on a new connection. */
+    refresh() {
+        this.stats.refreshes++;
+        this.errCount = 0; this.layerErr = '';
+        if (!this.want) return false;
+        const had = !!this.cr;
+        this.err = null; this.noEffect = false;            // a tool installed since: tried again at once
+        this._restart('refresh');
+        return had;
+    }
+    _off() {
+        const cr = this.cr;
+        if (this.poll) this.T.clearInterval(this.poll);
+        if (this.pump) this.T.clearInterval(this.pump);
+        if (cr) {
+            this._dropLook();
+            if (this.field) { ['L', 'R'].forEach((s) => { try { cr.drop(this.field[s]); this.stats.drops++; } catch (e) { /* gone */ } }); }
+            try { cr.close(); } catch (e) { /* gone */ }
+            this.log.info('cluster skin: off');
+        }
+        this._reset();
+    }
+    close() { this._off(); this.want = false; this.cache = { id: '', tex: null }; }
+
+    /** The Options line: { kind: 'on' | 'wait' | 'off' | 'none' | 'error', text } */
+    view() {
+        const s = this.st || {};
+        if (s.enabled === false) return { kind: 'off', text: 'Off' };
+        if (this.err) return { kind: 'none', text: SHORT_ERR[this.err.error] || this.err.text };
+        if (!this.want) return { kind: 'off', text: 'On - parked, Sport layout' };
+        if (!this.cr || !this.ready || !this.polled) return { kind: 'wait', text: 'Connecting to renderer' };
+        if (this.noEffect) return { kind: 'none', text: 'Update Cluster renderer' };
+        const why = this.why || this._why();
+        if (!why && this.visible) {
+            const n = this.cur ? META.looks[this.cur.id].name : '';
+            return { kind: 'on', text: 'Shown - ' + n };
+        }
+        const TXT = { moving: 'Stock while driving', 'in gear': 'Stock while in gear', 'not Sport': 'Stock - Sport layout only',
+            'no speed signal': 'Stock - no speed signal', 'demo data': 'Stock - demo data', 'panel in use': 'Waiting - panel in use',
+            'renderer error': 'Renderer refused the skin', assets: 'Skin failed to load', 'no update': 'Stock' };
+        return { kind: why === 'renderer error' || why === 'assets' ? 'error' : 'wait', text: TXT[why] || 'Stock' };
+    }
+}
+const SHORT_ERR = { missing: 'Needs Cluster renderer', noclient: 'Update Cluster renderer', untrusted: 'Renderer not trusted', load: 'Renderer failed to load' };
+
+module.exports = { ClusterSkin, blocker, values, panelLayers, LOOK_SKIN, TARGET, KLASS, SKIN_Z, LAYOUT, POLL_MS, PUMP_MS, REARM_MS, FRESH_HOLD, FRESH_FADE, STALE_MS, HOLD_MS };

@@ -32,6 +32,13 @@
  *     instrument cluster (cluster.js), on / off, through the separately installed "Waze on cluster"
  *     tool's patch service: off unless the tool is installed and the user turns it on (with a
  *     confirmation); G's Dash stores nothing for it.
+ *   - cluster skins (0.8.0, cluster_skin.js, setting "clusterSkin", on by default): parked in P / N with
+ *     the cluster in its Sport layout, the cluster's own dials redrawn in the G's Dash look (the look
+ *     switches the skin; Stock, the stock dials redrawn, from diagnostics), the telltales on top, back
+ *     to stock at once when driving off or anything is wrong. Options > Refresh cluster drops and makes
+ *     again every G's Dash layer in the cluster (the logo takes the map back from the stock map). On the
+ *     diagnostics page, parked: the alignment card (a 1 px outline of the measured geometry) and the
+ *     Stock redraw.
  *
  * Built on the idrive7-apps kit (kit/runtime). Node 8: no optional chaining, no ?? and no object spread.
  */
@@ -52,6 +59,7 @@ const DIAG = require('./diag');
 const ClusterMap = require('./cluster').ClusterMap;
 const Fuel = require('./fuel');
 const CL = require('./cluster_logo');
+const CS = require('./cluster_skin');
 const P = require('./px');
 
 const LOOKS = [require('./look_simple'), require('./look_m'), require('./look_gt'),
@@ -62,7 +70,7 @@ const lookOf = (id) => LOOKS.find((l) => l.id === id) || LOOKS[0];
 const MPH = 1.609344;
 const TRAIL_MS = 3000;
 const OIL_READY_F = 194, COOLANT_READY_F = 176, HYST_F = 4;
-const VERSION = '0.7.5';
+const VERSION = '0.8.0';
 // Warm-up: the rev limit is COLD_RPM at or below COLD_F oil, rising (250 rpm steps) to WARM_REDLINE at
 // the "oil temp for full revs" setting. Auto-jump: AUTO_MS after READY it opens Drive.
 const COLD_RPM = 4000, COLD_F = 104, WARM_REDLINE = 6000, OIL_FULL_F = 180, AUTO_MS = 5000;
@@ -162,7 +170,7 @@ mgu.run({
         // whenever the screen is left (the HMI's back arrow / BACK closes it; it comes back on the hub)
         const toDash = () => { if (page === 0) return false; if (ask) { ask = null; return true; } page = page >= 2 ? 1 : 0; return true; };
         if (ctx.onBack) ctx.onBack(toDash);
-        if (ui.onVisible) ui.onVisible((st, on) => { if (!on) { page = 0; taps = []; ask = null; } });
+        if (ui.onVisible) ui.onVisible((st, on) => { if (!on) { page = 0; taps = []; ask = null; skinMode = 'skin'; } });
         // the logo in the cluster's map area (cluster_logo.js, setting "clusterLogo"): only while G's Dash
         // is open, the regular logo or (Pixel look) the pixel emblem, its motion only while standing still
         let regImg = null;
@@ -171,13 +179,28 @@ mgu.run({
             pixel: (o) => CL.pixelImage(P, o),
         } });
         const logoOn = () => settings.get('clusterLogo') !== 'off';
+        // the cluster skins (cluster_skin.js, setting "clusterSkin"): parked, Sport layout, the look's;
+        // skinMode from the diagnostics page: 'skin', 'align' (the alignment card), 'stock' (the Stock redraw)
+        const cskin = new CS.ClusterSkin({ log, app: 'ng_gsdash', load: (f) => PNG.decode(fs.readFileSync(path.join(__dirname, f))) });
+        const skinOn = () => settings.get('clusterSkin') !== 'off';
+        let skinMode = 'skin', refreshedAt = -1e15;
+        const SPEED_IFACE = 'de.bmw.infotainment.vehicle.Vehicle2';
         const logoUpdate = (open) => {
             const d = car.data();
             clogo.update({ on: !!open && logoOn(), enabled: logoOn(), pixel: look().id === 'pixel', parked: L.isNum(d.speed) && d.speed < 1 });
+            const sub = car.subBy ? car.subBy[SPEED_IFACE] : null;
+            cskin.update({ on: !!open && (skinOn() || skinMode !== 'skin'), enabled: skinOn() || skinMode !== 'skin', look: look().id, mode: skinMode, data: d,
+                speedAvail: !!(sub && sub.available && !sub.error), fuel: fuel.state(), gear: L.gearText(d.gear, d.stage) });
+        };
+        /** Options > Refresh cluster: every G's Dash layer in the cluster dropped and made again */
+        const refreshCluster = () => {
+            const a = clogo.refresh(), b = cskin.refresh();
+            refreshedAt = Date.now();
+            log.info('refresh cluster: logo ' + (a ? 'remade' : 'not up') + ', skin ' + (b ? 'remade' : 'not up'));
         };
         if (ui.onVisible) ui.onVisible((st, on) => { if (st === 'MAIN') logoUpdate(on); });
-        settings.onChange((k) => { if (k === 'clusterLogo' || k === 'look') logoUpdate(ui.isVisible ? ui.isVisible('MAIN') : true); });
-        process.once('exit', () => clogo.close());
+        settings.onChange((k) => { if (k === 'clusterLogo' || k === 'clusterSkin' || k === 'look') logoUpdate(ui.isVisible ? ui.isVisible('MAIN') : true); });
+        process.once('exit', () => { clogo.close(); cskin.close(); });
         // route guidance (0.7.4, 0.7.5): the logo steps aside while it runs, and only then (or for G's TV). The stock navigation's guidingState
         // (INACTIVE / CALCULATING_ROUTE / ACTIVE) and the phone's projectedGuidanceActive (CarPlay: Waze
         // or Maps with a route; Android Auto), all app.json "_optional"; read again every GUIDE_POLL_MS
@@ -517,7 +540,7 @@ mgu.run({
             ENGINE.forEach((r, k) => stepRow(cv, S, lk, x1, slot(k), cw, ROW_H, r));
             // 3. G-meter & session; Spotify & cluster
             const x2 = x1 + cw + gap;
-            lbl('G-meter & session', x2, S.y + 20, 18, t.dim);
+            lbl('G-meter, session & cluster', x2, S.y + 20, 18, t.dim);
             stepRow(cv, S, lk, x2, slot(0), cw, ROW_H, GSCALE);
             const live = Date.now() - armed < 5000, ry = slot(1);
             card(cv, t, x2, ry, cw, ROW_H, false);
@@ -529,10 +552,34 @@ mgu.run({
             cv.target(x2, ry, cw, ROW_H, () => {
                 if (Date.now() - armed < 5000) { armed = 0; reset(); log.info('peaks reset'); say('Peaks reset'); } else armed = Date.now();
             }, 'opt:reset', u.radius);
-            lbl('Spotify & cluster', x2, slot(3) - 14, 18, t.dim);
-            linkRow(cv, S, lk, x2, slot(3), cw, ROW_H, 'opt:spotify', 'Spotify', music.statusLine(), () => press(2, 'opt:spotify'));
-            const lv = clogo.view(), lon = logoOn();
-            linkRow(cv, S, lk, x2, slot(4), cw, ROW_H, 'opt:cluster', 'Cluster logo', lon ? lv.text : 'Off', () => { ask = null; press(4, 'opt:cluster'); }, lon ? logoTone(t, lv.kind) : null);
+            linkRow(cv, S, lk, x2, slot(2), cw, ROW_H, 'opt:spotify', 'Spotify', music.statusLine(), () => press(2, 'opt:spotify'));
+            // the Cluster logo page, and beside it Refresh cluster (0.8.0): every G's Dash layer in the
+            // cluster dropped and made again; "Cluster refreshed" for REFRESHED_MS
+            const lv = clogo.view(), lon = logoOn(), fw = 156, done = Date.now() - refreshedAt < REFRESHED_MS;
+            linkRow(cv, S, lk, x2, slot(3), cw - fw - 12, ROW_H, 'opt:cluster', 'Cluster logo', done ? 'Cluster refreshed' : lon ? lv.text : 'Off', () => { ask = null; press(4, 'opt:cluster'); }, done ? HUB.GREEN : lon ? logoTone(t, lv.kind) : null);
+            const fb = { x: x2 + cw - fw, y: slot(3), w: fw, h: ROW_H };
+            card(cv, t, fb.x, fb.y, fb.w, fb.h, isDown('opt:refresh') || done);
+            lbl(done ? 'Refreshed' : 'Refresh', fb.x + fb.w / 2, fb.y + 28, u.size, t.text, { align: 'center' });
+            lbl('cluster', fb.x + fb.w / 2, fb.y + 52, Math.round(u.size * 0.72), t.dim, { align: 'center' });
+            cv.target(fb.x, fb.y, fb.w, fb.h, () => { gDown = Date.now(); downKey = 'opt:refresh'; refreshCluster(); }, 'opt:refresh', u.radius);
+            skinRow(cv, S, lk, x2, slot(4), cw, ROW_H);
+        }
+        const REFRESHED_MS = 2600;
+        /** "Cluster skins": Off / On (setting clusterSkin) and what the skin does now. */
+        function skinRow(cv, S, lk, x, y, w, h) {
+            const t = S.t, u = lk.ui, acc = t.sel || t.accent, on = skinOn(), sv = cskin.view();
+            const tone = on ? logoTone(t, sv.kind) : null;
+            cardOf(lk)(cv, t, x, y, w, h, false);
+            const bw = 84, bx0 = x + w - 2 * bw - 12;
+            rowText(cv, S, lk, x + (tone ? 18 : 0), y, bx0 - x - 12 - (tone ? 18 : 0), h, 'Cluster skins (parked, Sport)', on ? sv.text : 'Off', { shrink: true });
+            if (tone) cv.circle(x + 22, y + h - 20, 6, tone);
+            [[false, 'Off', 'off'], [true, 'On', 'on']].forEach((b, i) => {
+                const bx = bx0 + i * (bw + 6), sel = on === b[0], by = y + 10, bh = h - 20;
+                if (sel) { cv.roundRect(bx, by, bw, bh, u.radius, L.withAlpha(acc, 0.22)); cv.strokeRoundRect(bx, by, bw, bh, u.radius, 2, acc); }
+                else cv.roundRect(bx, by, bw, bh, u.radius, L.withAlpha('#ffffff', 0.06));
+                cv.text(u.upper ? b[1].toUpperCase() : b[1], bx + bw / 2, by + bh / 2 + 9, 24, sel ? t.text : t.dim, { font: u.txt, align: 'center', spacing: u.upper ? u.spacing : 0, literal: true });
+                if (!sel) cv.target(bx, by, bw, bh, () => settings.set('clusterSkin', b[2]), 'cs:' + b[2], u.radius);
+            });
         }
 
         /**
@@ -716,13 +763,26 @@ mgu.run({
                     }
                 });
                 cat.wrapped = out; cat.wrapW = w;
-                const rows = Math.floor((top + S.h - 10 - y) / 22);
+                const rows = Math.floor((top + S.h - 84 - y) / 22);
                 out.slice(0, rows).forEach((l) => {
                     cv.text(fitText(cv, l[1], 17, w - 28, l[0] === 'row' ? mono : {}), x + 14, y, 17, l[0] === 'head' ? t.text : l[0] === 'warn' ? (t.warn || t.crit) : t.dim, l[0] === 'row' ? { font: 'num', literal: true } : { literal: true });
                     y += 22;
                 });
                 if (out.length > rows) put(x + 14, y - 2, w - 28, '+ ' + (out.length - rows) + ' more lines', t.dim, 15);
             }
+            // the cluster skins (0.8.0), parked only: the alignment card (to photograph against the stock
+            // dials) and the Stock redraw; a second tap goes back to the look
+            const d2 = car.data(), parked = L.isNum(d2.speed) && d2.speed < 1 && d2.stage !== 'D' && d2.stage !== 'R';
+            const bw2 = (w - 28 - 12) / 2, by2 = top + S.h - 70, bh2 = 56;
+            [['align', 'Alignment card'], ['stock', 'Stock redraw']].forEach((b, i) => {
+                const bx = x + 14 + i * (bw2 + 12), on = skinMode === b[0];
+                if (on) { cv.roundRect(bx, by2, bw2, bh2, u.radius, L.withAlpha(t.sel || t.accent, 0.25)); cv.strokeRoundRect(bx, by2, bw2, bh2, u.radius, 2, t.sel || t.accent); }
+                else cv.roundRect(bx, by2, bw2, bh2, u.radius, L.withAlpha('#ffffff', parked ? 0.08 : 0.03));
+                cv.text(b[1], bx + bw2 / 2, by2 + 26, 18, parked || on ? t.text : t.dim, { align: 'center', literal: true });
+                cv.text(on ? 'on - tap for the look' : parked ? 'parked: tap to show' : 'parked only', bx + bw2 / 2, by2 + 47, 14, t.dim, { align: 'center', literal: true });
+                if (on || parked) cv.target(bx, by2, bw2, bh2, () => { skinMode = on ? 'skin' : b[0]; log.info('cluster skin mode: ' + skinMode); }, 'sk:' + b[0], u.radius);
+            });
+            if (skinMode !== 'skin') cv.text(fitText(cv, 'Cluster: ' + cskin.view().text, 15, w - 28), x + 14, by2 - 8, 15, t.dim, { literal: true });
         }
         /**
          * The Cluster logo page: the logo first ("Logo in cluster when not navigating": Off / On and what

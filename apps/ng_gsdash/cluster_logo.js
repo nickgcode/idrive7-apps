@@ -546,6 +546,16 @@ class ClusterLogo {
         this._reset();
     }
     close() { this._off(); this.want = false; }
+    /**
+     * Options > Refresh cluster (0.8.0, a black bar left in the cluster): our layer dropped, the
+     * connection closed and made again, the logo made anew (contending: it takes the map slot back
+     * from the stock map). false: the logo is not up (off, closed, no renderer).
+     */
+    refresh() {
+        if (!this.want || !this.cr) return false;
+        this._restart('refresh');
+        return true;
+    }
 
     /** The Options line, short enough for its row: { kind: 'on' | 'wait' | 'off' | 'none' | 'error', text }. */
     view() {
