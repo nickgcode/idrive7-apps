@@ -16,7 +16,7 @@
   var DEFAULT_MAILBOX = 'https://ntfy.sh';
   var MAILBOXES = ['https://ntfy.sh'];   // keep in step with connect-src in index.html
   var AUTHORIZE = 'https://accounts.spotify.com/authorize';
-  var SCOPES = 'user-read-playback-state user-modify-playback-state user-read-currently-playing user-library-read user-library-modify';
+  var SCOPES = 'user-read-playback-state user-modify-playback-state user-read-currently-playing user-library-read user-library-modify user-read-recently-played';
   var AAD = new TextEncoder().encode('ng_spotify/1');
   var CID_KEY = 'ng_spotify.client_id';
   var WAIT_MS = 90000;
