@@ -8,6 +8,7 @@
  */
 const L = require('./lib');
 const G = require('./kit/gauges');
+const CLOCK = require('./clock');
 const { withAlpha, isNum } = L;
 
 // left to right as the swipe goes; the app opens on HOME (Drive), second: Showcase is a swipe right of it
@@ -333,12 +334,9 @@ function tires(cv, st, S, M) {
 
 
 /* ---------- showcase ---------- */
-const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-/** 12-hour clock text from a Date (the head unit's local time). */
+/** 12-hour clock text from a Date, in the zone the Date reads (the head unit's): H:MM with a colon (clock.js). */
 function clock12(d) {
-    const h = d.getHours() % 12 || 12, m = d.getMinutes();
-    return { time: h + ':' + (m < 10 ? '0' : '') + m, ampm: d.getHours() < 12 ? 'AM' : 'PM', date: DAYS[d.getDay()] + ' · ' + MONTHS[d.getMonth()] + ' ' + d.getDate() };
+    return CLOCK.text({ h: d.getHours(), m: d.getMinutes(), dow: d.getDay(), mon: d.getMonth(), day: d.getDate() });
 }
 /** Fit an image (iw x ih) into a box, aspect kept, centred. */
 function fit(iw, ih, x, y, w, h) {
@@ -348,7 +346,7 @@ function fit(iw, ih, x, y, w, h) {
 
 /**
  * Showcase: three columns across the page. Left the car (img.car), centre Spotify (music.panel)
- * while a track is there, else a large 12-hour clock; right the logo (img.logo) on a dark plate.
+ * while a track is there, else a large 12-hour clock (H:MM, clock.js); right the logo (img.logo) on a dark plate.
  * img = { car: { id, w, h } | null, logo: ... }. Returns the centre column's rect.
  */
 function showcase(cv, st, S, music, lk, gr, img, now) {
@@ -365,7 +363,8 @@ function showcase(cv, st, S, music, lk, gr, img, now) {
     if (music && music.hasTrack()) music.panel(cv, S, lk, mid, gr);
     else {
         if (music) music.band = null;
-        const c = clock12(new Date(now)), size = 132, tw = st.numW(cv, c.time, size), aw = st.txtW(cv, c.ampm, 30);
+        // now: the clock's reading (clock.js: the car's time when it sends one, else the head unit's), or a time in ms
+        const c = now && typeof now === 'object' && now.time ? now : clock12(new Date(now)), size = 132, tw = st.numW(cv, c.time, size), aw = st.txtW(cv, c.ampm, 30);
         const cx = c1 + cw / 2, by = top + h / 2 + size * 0.32, x0 = cx - (tw + 14 + aw) / 2;
         st.num(cv, c.time, x0, by, size, t.text);
         st.txt(cv, c.ampm, x0 + tw + 14, by, 30, t.dim);

@@ -13,6 +13,10 @@
  * build): it draws only for Auto and Music (its own Cluster setting still decides; Off is respected),
  * the pick read from /dev/shm/ng-cluster/source.json, checked, the last good one kept in settings.json,
  * else Auto. Its own Cluster setting goes to /dev/shm/ng-cluster-music/state.json for G's Dash's page.
+ * 0.7.0: a Cluster button left of the heart on Now Playing (cluster_toggle.js) turns the Cluster setting
+ * off, or back on to its last on value; an amber dot (and its toast) when G's Dash's pick (Map, Stock or
+ * Logo) keeps the cluster for something else. With nothing playing, a Shuffle Liked Songs button
+ * (spotify.js shuffleLiked()).
  *
  * Source: the Spotify Web API (spotify.js) over mgu-uplink (mgu-store), so it controls whatever device
  * your account plays on - the phone that is connected to the car included. Player commands need
@@ -52,6 +56,7 @@ const CSRC = require('./cluster_source');
 const VIZ = require('./viz');
 const zlib = require('zlib');
 const WLOGO = require('./widget_logo');
+const CT = require('./cluster_toggle');
 const Lyrics = LyricsLib.Lyrics;
 
 const NAME = "G's Music";
@@ -357,7 +362,11 @@ mgu.run({
         };
         setInterval(() => { try { clusterTick(); } catch (e) { log.warn('music cluster: ' + e.message); } }, 250);
         process.once('exit', () => mc.close());
-        settings.onChange((k) => { if (k === 'cluster') { shareSetting(); nextPoll = 0; clusterTick(); } });
+        settings.onChange((k) => {
+            if (k !== 'cluster') return;
+            if (CT.isOn(settings.get('cluster')) && settings.get(CT.LAST_KEY) !== settings.get('cluster')) settings.set(CT.LAST_KEY, settings.get('cluster'));
+            shareSetting(); nextPoll = 0; clusterTick();
+        });
         // route guidance hides the cluster's picture, as G's Dash's logo (app.json "_optional" signals)
         const GUIDE = [
             ['de.bmw.infotainment.navigation.navigationstatus.NavigationStatus', '1', 'guidingState', 'nav'],
@@ -468,6 +477,19 @@ mgu.run({
             const was = pb, playing = !!(pb && pb.playing);
             if (playing) return run('pause', () => sp.pause(), () => { pb.progress = position(); pb.at = Date.now(); pb.playing = false; });
             return run('play', async () => started(await sp.start()), () => { if (pb === was) { pb.at = Date.now(); pb.playing = true; } });
+        };
+        /** The Shuffle Liked Songs button (0.7.0): shuffle on, the Liked Songs on the active / last device. */
+        let likedBusy = false;
+        const shuffleLiked = async () => {
+            if (likedBusy) return;
+            likedBusy = true;
+            try {
+                await run('shuffle liked songs', async () => {
+                    const r = await sp.shuffleLiked();
+                    log.info('shuffle liked songs: ' + r.count + ' tracks' + (r.device ? ' (' + r.device + ')' : ''));
+                    say('Shuffling your Liked Songs' + (r.device ? ' on ' + r.device : ''), 4000);
+                });
+            } finally { likedBusy = false; soon(); }
         };
         /** What Play started, as a toast when it was more than a resume on the same device. */
         function started(r) {
@@ -680,17 +702,44 @@ mgu.run({
             }
         }
 
+        /**
+         * The Cluster button (0.7.0), left of the heart: 96 x 96, the cluster's screen with three bars in
+         * the M colours. On: lit in red (a ring and a glow); Off: dim, struck through. An amber dot while
+         * G's Dash's pick keeps the cluster for something else. A tap: cluster_toggle.js.
+         */
+        function clusterButton(cv, t, vx, vy) {
+            const vk = 'cviz', cOn = CT.isOn(settings.get('cluster')), blocked = cOn && CT.blockedBy(pick());
+            if (isDown(vk)) cv.circle(vx, vy, 46, G.withAlpha(M.RED, 0.25));
+            if (cOn) { cv.circle(vx, vy, 38, G.withAlpha(M.RED, 0.20)); cv.arc(vx, vy, 36.5, 38.5, 0, 360, M.RED); }
+            else cv.arc(vx, vy, 36.5, 38, 0, 360, G.withAlpha('#ffffff', 0.18));
+            const gw = 46, gh = 30, gx = vx - gw / 2, gy = vy - gh / 2 - 2, ic = cOn ? '#ffffff' : t.dim;
+            cv.strokeRoundRect(gx, gy, gw, gh, 6, 2.5, ic);
+            [[-12, 12, M.LIGHT_BLUE], [0, 19, M.DARK_BLUE], [12, 9, M.RED]].forEach((b) =>
+                cv.roundRect(vx + b[0] - 2.5, gy + gh / 2 - b[1] / 2, 5, b[1], 2.5, cOn ? b[2] : G.withAlpha(t.dim, 0.7)));
+            cv.line(vx - 8, gy + gh + 6, vx + 8, gy + gh + 6, 2.5, ic);
+            if (!cOn) cv.line(vx - 24, vy + 18, vx + 24, vy - 22, 3, t.dim);
+            if (blocked) { cv.circle(vx + 27, vy - 27, 10, t.bg); cv.circle(vx + 27, vy - 27, 7, '#ffb020'); }
+            FS.button(cv, vk, vx - 48, vy - 48, 96, 96, () => {
+                downKey = vk; downAt = Date.now();
+                const r = CT.toggle(settings.get('cluster'), settings.get(CT.LAST_KEY), pick());
+                settings.set(CT.LAST_KEY, r.last);
+                settings.set('cluster', r.value);
+                log.info('cluster button: ' + r.value);
+                say(r.toast);
+            }, { r: 48 });
+        }
+
         function drawPlaying(cv, t, Q, now) {
             const X = Q.X, W = Q.W, y0 = Q.A.y, on = t.accent2 || t.accent;
             // the artwork's colour washes the page faintly
             if (artReady && artTint) cv.gradientRect(0, 0, 1600, Q.A.bottom + 8, [[0, G.withAlpha(artTint, WASH)], [1, G.withAlpha(artTint, 0)]]);
             artBox(cv, t, Q, artReady, pb.album || pb.title || 'Spotify');
-            cv.text(fit(cv, pb.ad ? 'Advertisement' : pb.title || 'Unknown track', 54, W - 124, { font: 'bold' }), X, y0 + 56, 54, t.text, { font: 'bold', literal: true });
+            cv.text(fit(cv, pb.ad ? 'Advertisement' : pb.title || 'Unknown track', 54, W - 240, { font: 'bold' }), X, y0 + 56, 54, t.text, { font: 'bold', literal: true });
             // artist, then the album dimmer, on one line
             const aw = cv.textWidth(LyricsLib.fold(pb.artist), 30, { literal: true });
-            const art = fit(cv, pb.artist, 30, W - 124);
+            const art = fit(cv, pb.artist, 30, W - 240);
             cv.text(art, X, y0 + 100, 30, t.text, { literal: true });
-            if (pb.album && aw < W - 124 - 120) cv.text(fit(cv, '  \u00b7  ' + pb.album, 30, W - 124 - aw), X + aw, y0 + 100, 30, t.dim, { literal: true });
+            if (pb.album && aw < W - 240 - 120) cv.text(fit(cv, '  \u00b7  ' + pb.album, 30, W - 240 - aw), X + aw, y0 + 100, 30, t.dim, { literal: true });
 
             // the heart (like), right of the title: 96 x 96 and a finger's slop
             const hx = Q.R - 48, hy = y0 + 42, lk = 'like';
@@ -699,6 +748,7 @@ mgu.run({
             const inside = artReady && artTint ? G.mix(t.bg, artTint, WASH * (1 - hy / (Q.A.bottom + 8))) : t.bg;
             if (liked) heart(cv, hx, hy, 50, t.crit); else heartOutline(cv, hx, hy, 50, !pb.uri ? t.track : t.dim, inside);
             FS.button(cv, lk, hx - 48, hy - 48, 96, 96, () => { downKey = lk; downAt = Date.now(); return toggleLike(); }, { r: 48 });
+            clusterButton(cv, t, hx - 112, hy);
 
             // progress (moved on locally between polls; a finger on the bar shows where it will seek)
             const dur = pb.duration || 0, pos = scrub && dur ? scrub.f * dur : position(now);
@@ -827,12 +877,36 @@ mgu.run({
             });
         }
 
+        /**
+         * Nothing playing: what to do, and the Shuffle Liked Songs button (0.7.0) centred in the text column
+         * over the dock: a big pill in the app's accent (spotify.js shuffleLiked()).
+         */
         function drawIdle(cv, t, Q) {
             artBox(cv, t, Q, false);
             const X = Q.X, y0 = Q.A.y;
             cv.text('Nothing playing', X, y0 + 104, 56, t.text, { font: 'bold' });
             cv.text(fit(cv, 'Tap Play to pick up your last track, or shuffle your Liked Songs.', 28, Q.W), X, y0 + 160, 28, t.dim, { literal: true });
             cv.text(fit(cv, 'Plays on your phone (or the last Spotify device) - keep Spotify open there.', 24, Q.W), X, y0 + 200, 24, t.dim, { literal: true });
+            likedButton(cv, t, Q);
+        }
+        /** The Shuffle Liked Songs pill: 112 px tall, up to 560 wide, centred between the hint lines and the dock. */
+        function likedButton(cv, t, Q) {
+            const k = 'liked', acc = t.accent2 || t.accent, down = isDown(k) || likedBusy;
+            const w = Math.min(560, Q.W), h = 112, top = Q.A.y + 236, bot = Q.DY - 24;
+            const x = Q.X + (Q.W - w) / 2, y = Math.round(top + Math.max(0, (bot - top - h) / 2));
+            cv.roundRect(x, y, w, h, h / 2, down ? G.mix(acc, '#000000', 0.25) : acc);
+            if (down) cv.strokeRoundRect(x, y, w, h, h / 2, 2, G.withAlpha('#ffffff', 0.5));
+            // the shuffle glyph: two crossing arrows
+            // the ink: near-black on a light accent (the light blue), white on a dark one
+            const rgb = /^#([0-9a-f]{6})$/i.exec(acc), lum = rgb ? [0, 2, 4].reduce((v, i, j) => v + [0.299, 0.587, 0.114][j] * parseInt(rgb[1].substr(i, 2), 16), 0) : 0;
+            const gx = x + 64, gy = y + h / 2, ink = lum > 150 ? '#07111c' : '#ffffff';
+            cv.line(gx - 22, gy - 14, gx - 6, gy - 14, 4, ink); cv.line(gx - 6, gy - 14, gx + 10, gy + 14, 4, ink); cv.line(gx + 10, gy + 14, gx + 22, gy + 14, 4, ink);
+            cv.line(gx - 22, gy + 14, gx - 6, gy + 14, 4, ink); cv.line(gx - 6, gy + 14, gx + 10, gy - 14, 4, ink); cv.line(gx + 10, gy - 14, gx + 22, gy - 14, 4, ink);
+            cv.line(gx + 22, gy - 14, gx + 14, gy - 21, 4, ink); cv.line(gx + 22, gy - 14, gx + 14, gy - 7, 4, ink);
+            cv.line(gx + 22, gy + 14, gx + 14, gy + 7, 4, ink); cv.line(gx + 22, gy + 14, gx + 14, gy + 21, 4, ink);
+            const opt = { font: 'bold', spacing: 1.5, literal: true };
+            cv.text(fit(cv, likedBusy ? 'STARTING\u2026' : 'SHUFFLE LIKED SONGS', 28, w - 140, opt), x + 104, gy + 10, 28, ink, opt);
+            FS.button(cv, k, x, y, w, h, () => { downKey = k; downAt = Date.now(); return shuffleLiked(); }, { slop: 8, r: h / 2 });
         }
 
         /**

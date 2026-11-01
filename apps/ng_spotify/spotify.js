@@ -25,6 +25,9 @@
  * playing, else a phone, else the first) as device_id, which also moves playback there. Scopes:
  * recently-played needs user-read-recently-played, Liked Songs user-library-read; a sign-in without them
  * (the token's scope list, or Spotify's 403 on those reads) gives 'SCOPE': sign in again.
+ * The Shuffle Liked Songs button (0.7.0, shuffleLiked()): straight to step 3 above on the same device pick;
+ * a sign-in without user-library-read or user-modify-playback-state: 'SCOPE' (sign in again), no device:
+ * 'NOPLAYER' (open Spotify on your phone first).
  * The Previous button (back()): as other players, more than RESTART_MS into the track restarts it
  * (seek to 0); otherwise the track before.
  */
@@ -53,9 +56,10 @@ const ACCOUNTS = 'accounts.spotify.com';
 const API = 'api.spotify.com';
 const MAX_BODY = 4 * 1024 * 1024;
 const RESTART_MS = 3000;            // Previous: past this far into the track, back to its start instead
-const LIKED_CAP = 300;              // start(): Liked Songs read at most (50 per page)
+const LIKED_CAP = 500;              // start() / shuffleLiked(): Liked Songs read at most (50 per page)
 const LIKED_PLAY = 100;             // ... and played of them, picked at random, as one uris list
-const SCOPE_RECENT = 'user-read-recently-played', SCOPE_LIBRARY = 'user-library-read';
+const SCOPE_RECENT = 'user-read-recently-played', SCOPE_LIBRARY = 'user-library-read', SCOPE_PLAY = 'user-modify-playback-state';
+const LIKED_SCOPE_MSG = 'Sign in again to enable Shuffle Liked Songs';
 /** start()'s own refusals, a short line for the screen as their message */
 const START_CODES = ['SCOPE', 'NOPLAYER', 'EMPTY'];
 
@@ -318,26 +322,57 @@ class Spotify {
             out.how = 'recent'; return out;
         }
         // 3. the Liked Songs, shuffled
-        let uris = [];
-        try {
-            for (let off = 0; off < LIKED_CAP; off += 50) {
-                const r = await this._scoped(SCOPE_LIBRARY, '/me/tracks', { limit: 50, offset: off });
-                const items = (r.json && Array.isArray(r.json.items)) ? r.json.items : [];
-                items.forEach((it) => { const t = it && it.track; if (t && t.uri && !t.is_local && /^spotify:track:/.test(t.uri)) uris.push(t.uri); });
-                if (items.length < 50 || !(r.json && r.json.next)) break;
-            }
-        } catch (e) {
-            if (e.code !== 'SCOPE') throw e;
-            out.missing.push(SCOPE_LIBRARY);
-            throw SpotifyError('Sign in again to enable this', 'SCOPE', 403);
+        try { await this._liked(dev, q); } catch (e) {
+            if (e.code === 'SCOPE' || (e.code === 'EMPTY' && out.missing.length)) throw SpotifyError('Sign in again to enable this', 'SCOPE', 403);
+            if (e.code === 'EMPTY') throw SpotifyError('Nothing to resume and no Liked Songs', 'EMPTY', 404);
+            throw e;
         }
-        if (!uris.length) throw SpotifyError(out.missing.length ? 'Sign in again to enable this' : 'Nothing to resume and no Liked Songs', out.missing.length ? 'SCOPE' : 'EMPTY', 404);
+        out.how = 'liked'; return out;
+    }
+    /** The device to play on: the active one, else Spotify.pickDevice(); -> { dev, q } or throws 'NOPLAYER'. */
+    async _device(msg) {
+        const st = await this.player();
+        let dev = st && st.device && st.device.id && st.device.is_active ? st.device : null;
+        if (!dev) {
+            dev = Spotify.pickDevice(await this.devices(), (st && st.device && st.device.id) || this.lastDevice);
+            if (!dev) throw SpotifyError(msg || 'Open Spotify on your phone', 'NOPLAYER', 404);
+        }
+        return { dev, q: dev.is_active ? undefined : { device_id: dev.id } };
+    }
+    /**
+     * The Liked Songs (GET /me/tracks, paged, LIKED_CAP at most) shuffled here, LIKED_PLAY of them as one
+     * uris list on dev (q: its device_id when not active), then shuffle on. Throws 'SCOPE' or 'EMPTY'.
+     */
+    async _liked(dev, q) {
+        let uris = [];
+        for (let off = 0; off < LIKED_CAP; off += 50) {
+            const r = await this._scoped(SCOPE_LIBRARY, '/me/tracks', { limit: 50, offset: off });
+            const items = (r.json && Array.isArray(r.json.items)) ? r.json.items : [];
+            items.forEach((it) => { const t = it && it.track; if (t && t.uri && !t.is_local && /^spotify:track:/.test(t.uri)) uris.push(t.uri); });
+            if (items.length < 50 || !(r.json && r.json.next)) break;
+        }
+        if (!uris.length) throw SpotifyError('No Liked Songs to shuffle', 'EMPTY', 404);
         for (let i = uris.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const x = uris[i]; uris[i] = uris[j]; uris[j] = x; }
         uris = uris.slice(0, LIKED_PLAY);
         await this.api('PUT', '/me/player/play', q, { uris: uris });
         // shuffle on for the device now playing (a refusal here is not worth an error: the list is shuffled already)
         try { await this.api('PUT', '/me/player/shuffle', { state: 'true', device_id: dev.id }); } catch (e) { this.log.warn('spotify: shuffle on: ' + e.message); }
-        out.how = 'liked'; return out;
+        return uris.length;
+    }
+    /**
+     * The Shuffle Liked Songs button: { device, count }. Throws 'SCOPE' (with LIKED_SCOPE_MSG), 'NOPLAYER'
+     * ('Open Spotify on your phone first') or 'EMPTY'.
+     */
+    async shuffleLiked() {
+        if (this.lacks(SCOPE_LIBRARY) || this.lacks(SCOPE_PLAY)) throw SpotifyError(LIKED_SCOPE_MSG, 'SCOPE', 403);
+        const d = await this._device('Open Spotify on your phone first');
+        try {
+            const count = await this._liked(d.dev, d.q);
+            return { device: d.dev.name || '', count };
+        } catch (e) {
+            if (e.code === 'SCOPE') throw SpotifyError(LIKED_SCOPE_MSG, 'SCOPE', 403);
+            throw e;
+        }
     }
     play() { return this.api('PUT', '/me/player/play'); }
     pause() { return this.api('PUT', '/me/player/pause'); }
@@ -372,4 +407,4 @@ class Spotify {
     }
 }
 
-module.exports = { Spotify, RESTART_MS, LIKED_CAP, LIKED_PLAY, SCOPE_RECENT, SCOPE_LIBRARY };
+module.exports = { Spotify, RESTART_MS, LIKED_CAP, LIKED_PLAY, SCOPE_RECENT, SCOPE_LIBRARY, SCOPE_PLAY, LIKED_SCOPE_MSG };

@@ -209,6 +209,14 @@ module.exports = {
         const gs = Math.min(gh * 1.02, 300);
         cv.text(S.gearText, g.cx, gy + gh / 2 + gs * 0.36, gs, gcol, { align: 'center', font: GEAR, literal: true });
         modePill(cv, g.cx, gy, S);                 // on the box's top edge
+        // the favourite looks' tap zones (main.js): the speed above the data blocks (the session block keeps its
+        // own tap), the gear box
+        const uw = cv.textWidth(S.unit, 16, { font: TXT, spacing: 2, literal: true }), sb = Math.round(top + 20 + ss * 0.74);
+        S.zones = {
+            speed: { x: lx, y: top - 4, w: lw, h: by0 - 8 - (top - 4) }, gear: { x: gx, y: gy, w: gw, h: gh },
+            toast: { x: lx + lw / 2, y: Math.min(sb + 10, by0 - 60) }, chip: { x: gx + gw - 24, y: gy + gh - 22 },
+            star: { x: lx + lw - uw - 18, y: top + 8 },
+        };
         // digital rpm, then the longitudinal g as a centre-zero delta bar
         const ry = gy + gh + 52;
         const rv = isNum(S.rpm) ? String(Math.round(S.rpm / 10) * 10) : '----';

@@ -229,6 +229,12 @@ module.exports = {
         const gs = Math.min(gh * 0.92, 250), gcol = S.strobe ? (S.blink ? RED : WHITE) : WHITE;
         cv.text(S.gearText, gx + gw / 2, gy + gh / 2 + gs * 0.40, gs, withAlpha(gcol, 0.10), { align: 'center', font: GEAR, literal: true });
         cv.text(S.gearText, gx + gw / 2, gy + gh / 2 + gs * 0.36, gs, gcol, { align: 'center', font: GEAR, literal: true });
+        // the favourite looks' tap zones (main.js): the speed inside the ring (under the rpm), the gear capsule
+        const uw = cv.textWidth('MPH', 17, { font: TXT, spacing: 8, literal: true });
+        S.zones = {
+            speed: { x: tx - 170, y: cy - 60, w: 340, h: 152 }, gear: { x: gx, y: gy, w: gw, h: gh },
+            toast: { x: tx, y: cy + 96 }, chip: { x: gx + gw - 26, y: gy + gh - 24 }, star: { x: tx + uw / 2 + 18, y: cy + 76 },
+        };
         const ty = g.bottom - 104;
         tempLine(cv, S, gx + 4, ty, gw - 8, 'OIL', S.oil); tempLine(cv, S, gx + 4, ty + 56, gw - 8, 'COOLANT', S.cool);
         // right: peaks and the g-meter (or Spotify there)

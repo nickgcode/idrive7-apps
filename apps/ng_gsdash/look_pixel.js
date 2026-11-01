@@ -258,11 +258,18 @@ module.exports = {
         ptxt(cv, S.gearText, gx + gw / 2, gy + 52 + (gh - 70 - 7 * gu) / 2, gu, hb.ko ? (S.blink ? RED : WHITE) : WHITE, { align: 'center' });
 
         // ---- the speed (the hero) and the rpm, the mode badge
-        const cx = x0 + 670, su = 21;
+        // (0.10.0: in the 456 px box the speed's pixels shrink and the rpm row stays clear of the stat bars)
+        const by = bottom - 92;
+        const cx = x0 + 670, su = clamp(Math.floor((S.h - 333) / 7), 15, 21), my = top + 124 + 7 * su + 22;
         const sp = isNum(S.speed) ? String(Math.round(S.speed)) : '--';
         ptxt(cv, sp, cx, top + 124, su, WHITE, { align: 'center' });
-        ptxt(cv, 'MPH', cx, top + 124 + 7 * su + 22, 5, CYAN, { align: 'center' });
-        const ry = top + 124 + 7 * su + 80;
+        ptxt(cv, 'MPH', cx, my, 5, CYAN, { align: 'center' });
+        const ry = Math.min(top + 124 + 7 * su + 80, by - 54);
+        // the favourite looks' tap zones (main.js): the speed with its unit, the gear's item box
+        S.zones = {
+            speed: { x: cx - 260, y: top + 116, w: 520, h: my + 35 + 8 - (top + 116) }, gear: { x: gx, y: gy, w: gw, h: gh },
+            toast: { x: cx, y: my + 44 }, chip: { x: gx + gw - 30, y: gy + gh - 30 }, star: { x: cx + P.width('MPH', 5) / 2 + 22, y: my + 17 },
+        };
         const rt = isNum(S.rpm) ? String(Math.round(S.rpm / 10) * 10) : '----';
         const rw = P.width(rt, 6) + 20 + P.width('RPM', 4);
         ptxt(cv, rt, cx - rw / 2, ry, 6, hb.ko ? RED : hb.danger ? YEL : WHITE);
@@ -274,7 +281,6 @@ module.exports = {
         }
 
         // ---- bottom left: oil and coolant stat bars
-        const by = bottom - 92;
         stat(cv, S, gx + 300, by, 300, 'OIL', S.oil); stat(cv, S, gx + 660, by, 300, 'COOLANT', S.cool);
 
         // ---- right: the g radar and the peaks (Spotify takes this place when chosen)

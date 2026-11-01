@@ -2,9 +2,9 @@
 /**
  * hud_shift.js - G's Dash's HUD (0.9.0: the full HUD - speed, gear, shift lights; 0.8.2 had the
  * lights + gear band), through the separately installed Cluster renderer tool (the client as
- * cluster_logo.js loads it). While G's Dash is open and the setting "hudShift" ("HUD (speed, gear,
- * shift lights)", off by default; main.js turns the cluster skins off with it, and it off with them:
- * the panel and the HUD share one scene) the whole HUD shows, in the look's style (hud_core.js): the
+ * cluster_logo.js loads it). While G's Dash is open and the setting "displays" ("Your look on the car's
+ * displays", 0.10.0; 0.9.0: "hudShift") is HUD (one choice with the cluster dials and Neither: the panel
+ * and the HUD share one scene) the whole HUD shows, in the look's style (hud_core.js): the
  * speed in mph, big; the gearbox's own gear (R, N, D, 1..9; nothing in P, unknown or guessed); the shift
  * lights over the last RANGE (2000) rpm before the shift point (the redline less "Shift point, before
  * redline") with a flash at about 4 Hz from the shift point. Any drive mode. No speed limit (hud_core TODO).

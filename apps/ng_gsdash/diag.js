@@ -2,7 +2,7 @@
 /**
  * diag.js - the drive mode diagnostics page's second half: what the head unit's own SOME/IP catalog
  * (/etc/oap/someip/someip-interfaces.json, the file the installer generates every app's interfaces
- * from) says about the drive mode. Read-only, read once when the page is opened, only the lines it
+ * from) says about the drive mode, and (0.10.0) its fields named like a time or date. Read-only, read once when the page is opened, only the lines it
  * shows are kept. Definitions from the catalog, never live values (those come from car.js).
  * Node 8: no ?., no ??, no object spread.
  */
@@ -63,7 +63,22 @@ function extract(db) {
     });
     if (enums.length) lines.push(['head', 'Mode-like enums in the catalog (' + enums.length + '):']);
     enums.slice(0, 20).forEach((k) => lines.push(['row', '  ' + k + ' ' + typeText(db, k, 0)]));
+    // 0.10.0: fields named like a time of day or a date (a car clock for Showcase: clock.js), interface.field
+    const clk = clockFields(db);
+    lines.push(['head', clk.length ? 'Time / date fields in the catalog (' + clk.length + '):' : 'Time / date fields in the catalog: none']);
+    clk.slice(0, 16).forEach((f) => lines.push(['row', '  ' + f]));
     return lines;
+}
+
+const CLOCKISH = /time|date|clock|uhrzeit|datum/i, NOT_CLOCK = /timeout|update|validat|timer|lifetime|runtime/i;
+/** Every interface field named like a time of day or a date: 'Iface (short).field', sorted. */
+function clockFields(db) {
+    const out = [];
+    Object.keys(db.interfaces || {}).forEach((iface) => {
+        const fields = (db.interfaces[iface] && db.interfaces[iface].fields) || {};
+        Object.keys(fields).forEach((f) => { if (CLOCKISH.test(f) && !NOT_CLOCK.test(f)) out.push(iface.split('.').slice(-2).join('.') + '.' + f); });
+    });
+    return out.sort();
 }
 
 /** Start reading the catalog (once); returns the current state. */
@@ -86,4 +101,4 @@ function catalog(log) {
 /** Read it again next time (the page's Reload). */
 function reset() { if (state && state.status !== 'reading') state = null; }
 
-module.exports = { catalog, reset, CATALOG, extract };
+module.exports = { catalog, reset, CATALOG, extract, clockFields };

@@ -171,6 +171,13 @@ module.exports = {
         const unitY = y0 + 346 + m;
         cv.text(S.unit, sx, unitY, 18, t.dim, { align: 'center', font: TXT, spacing: 8, literal: true });
         cv.text(L.rpmText(S.rpm) + '  RPM', sx, y0 + 156 + ex * 0.15, 22, t.dim, { align: 'center', font: LT, spacing: 3, literal: true });
+        // the favourite looks' tap zones (main.js): the gear tile, and the speed under the rpm line down to its unit
+        const uw = cv.textWidth(S.unit, 18, { font: TXT, spacing: 8, literal: true });
+        S.zones = {
+            gear: { x: gx, y: gy, w: gw, h: gh },
+            speed: { x: sx - 230, y: y0 + 172 + Math.round(ex * 0.15), w: 460, h: unitY + 14 - (y0 + 172 + Math.round(ex * 0.15)) },
+            toast: { x: sx, y: unitY + 12 }, chip: { x: gx + gw - 26, y: gy + gh - 24 }, star: { x: sx + uw / 2 + 20, y: unitY - 7 },
+        };
 
         // peaks, then the g-meter (or the Spotify panel there)
         if (S.panel !== 'spotify') this.gPart(cv, S, t, x0, y0, ex, m);

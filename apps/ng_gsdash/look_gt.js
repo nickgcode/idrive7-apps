@@ -141,6 +141,14 @@ module.exports = {
         cv.text('RPM', cx[1] + 14, top + H - 16, 17, flash ? '#000000' : '#9a9a9a', { font: TXT, spacing: 1.5, literal: true });
         cv.text(isNum(S.rpm) ? String(Math.round(S.rpm / 10) * 10) : '----', cx[1] + cw[1] - 16, top + H - 12, 34, flash ? '#000000' : S.strobe ? '#ff2020' : '#ffffff', { align: 'right', font: NUM, literal: true });
 
+        // the favourite looks' tap zones (main.js): the speed cell, and the gear cell above its rpm line
+        const uw = cv.textWidth(S.unit, 17, { font: TXT, spacing: 1.5, literal: true });
+        S.zones = {
+            gear: { x: cx[1], y: top, w: cw[1], h: H - 56 }, speed: { x: cx[0], y: top, w: cw[0], h: sh },
+            toast: { x: cx[0] + cw[0] / 2, y: top + sh + 8 }, chip: { x: cx[1] + cw[1] - 26, y: top + H - 78 },
+            star: { x: cx[0] + cw[0] - 14 - uw - 18, y: top + 20 },
+        };
+
         // right: session clock, live g, peaks (or the Spotify panel there)
         if (S.panel === 'spotify') return;
         const rx = cx[2], rw = cw[2];

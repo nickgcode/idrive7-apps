@@ -130,6 +130,13 @@ module.exports = {
         const gd = /^[0-9]$/.test(S.gearText);   // digits in 7 segments, N / R / P / D in 14
         seg(cv, S.gearText, gx, sy, sz, S.strobe && S.blink ? RED : AMB, gd ? SEG : TXT, 'right', gd ? '8' : '~');
         if (S.guessed) cv.text('EST', gx + 16, sy - 30, 22, DIMV, { font: TXT, literal: true });
+        // the favourite looks' tap zones (main.js): the speed digits with their unit, the gear digit with its label
+        const uw = cv.textWidth(S.unit, 22, { font: TXT, literal: true }), lw = cv.textWidth('GEAR', 22, { font: TXT, literal: true });
+        const zt = Math.round(sy - sz * 0.8 - 12), zh = Math.round(sz * 0.8 + 24);
+        S.zones = {
+            speed: { x: x0 + 230, y: zt, w: 574 + uw + 10 - 230, h: zh }, gear: { x: gx - 130, y: zt, w: 130 + 16 + lw + 50, h: zh },
+            toast: { x: x0 + 400, y: sy + 12 }, chip: { x: gx + 16 + lw + 22, y: sy - 8 }, star: { x: x0 + 574 + uw + 18, y: sy - 8 },
+        };
 
         // dot-matrix g, peaks (or the Spotify panel there)
         if (S.panel !== 'spotify') this.gPart(cv, S, x0, y0, ex, m);
