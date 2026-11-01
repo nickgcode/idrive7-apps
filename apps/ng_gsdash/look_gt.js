@@ -73,9 +73,11 @@ module.exports = {
             const c = i < 4 ? '#25e05a' : i < 7 ? '#ff2020' : '#2a7dff';
             cv.circle(x + 30 + i * step, y + 30, 9, i < 7 ? c : withAlpha(c, 0.18));
         }
-        cv.fillRect(x + 24, y + 58, w - 48, h - 66, CELL);
-        cv.strokeRoundRect(x + 25, y + 59, w - 50, h - 68, 0, 2, LINE);
-        cv.text('3', x + w / 2, y + h - 18, 86, '#ffffff', { align: 'center', font: GEAR, literal: true });
+        // the gear's box under the lights, the digit centred in it (by its ink, both ways)
+        const by = y + 50, bh = h - 54;
+        cv.fillRect(x + 24, by, w - 48, bh, CELL);
+        cv.strokeRoundRect(x + 25, by + 1, w - 50, bh - 2, 0, 2, LINE);
+        L.inkCentred(cv, '3', x + w / 2, by + bh / 2, Math.round(bh * 1.05), '#ffffff', { font: GEAR });
     },
 
     /** The G button: the last cell of the peaks row (the same grid as draw's). */

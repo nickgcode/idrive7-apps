@@ -160,8 +160,34 @@ function fuelText(F) {
     return { f, value, range: isNum(F.mi) ? Math.round(F.mi) + ' MI' : '', low: !!F.low, has: !!F.has };
 }
 
+/**
+ * Text with its ink (the glyphs' drawn boxes, not the advance and the baseline) centred on (cx, cy):
+ * the gallery cards' gear digits sit in the middle of their box or ring whatever the font's bearings.
+ * Returns the ink's height.
+ */
+function inkCentred(cv, s, cx, cy, size, c, o) {
+    s = String(s);
+    const opt = Object.assign({ literal: true }, o || {}, { align: 'left' });
+    const f = fonts.get(opt.font || 'label', size * (cv.textScale || 1), s);
+    if (!f) { cv.text(s, cx, cy, size, c, Object.assign({}, opt, { align: 'center' })); return 0; }
+    const k = size / f.size, sp = opt.spacing || 0;
+    let pen = 0, x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const ch of s) {
+        const g = f.glyphs[ch.codePointAt(0)] || f.glyphs[63];
+        if (!g) continue;
+        if (g[2] && g[3]) {
+            x0 = Math.min(x0, pen + g[4] * k); x1 = Math.max(x1, pen + (g[4] + g[2]) * k);
+            y0 = Math.min(y0, g[5] * k); y1 = Math.max(y1, (g[5] + g[3]) * k);
+        }
+        pen += g[6] * k + sp;
+    }
+    if (!(x1 > x0)) return 0;
+    cv.text(s, cx - (x0 + x1) / 2, cy - (y0 + y1) / 2, size, c, opt);
+    return y1 - y0;
+}
+
 module.exports = {
-    modeTone, sessionTap, fuelText,
+    modeTone, sessionTap, fuelText, inkCentred,
     loadFonts, FAMILIES, gearText, num0, num1, num2, rpmText, clock, lights, LIGHTS, badge, badgeWidth,
     pt, tick, needle, slant, chamfer, chamferStroke, halfSquare, RAD, withAlpha, mix, clamp, isNum,
     LIGHT_BLUE, DARK_BLUE, RED, LETTER,

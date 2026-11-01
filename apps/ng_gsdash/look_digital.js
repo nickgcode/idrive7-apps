@@ -105,13 +105,13 @@ module.exports = {
     cardBg(cv, t, x, y, w, h) { cv.fillRect(x, y, w, h, '#010303'); },
 
     swatch(cv, t, x, y, w, h) {
-        const n = 22, gap = 4, bw = (w - 48 - gap * (n - 1)) / n;
+        // the segmented rev bar alone (no digits), a little wider and taller, centred in the picture
+        const n = 24, gap = 4, side = 18, bw = (w - 2 * side - gap * (n - 1)) / n, top = 10, tall = 74;
+        const base = Math.round(y + (h + tall) / 2);
         for (let i = 0; i < n; i++) {
-            const f = i / (n - 1), hh = 8 + 50 * Math.pow(f, 1.6);
-            cv.fillRect(x + 24 + i * (bw + gap), y + 70 - hh, bw, hh, i < 15 ? VFD : i < 19 ? AMB : withAlpha(RED, 0.15));
+            const f = i / (n - 1), hh = top + (tall - top) * Math.pow(f, 1.6);
+            cv.fillRect(x + side + i * (bw + gap), base - hh, bw, hh, i < 16 ? VFD : i < 20 ? AMB : withAlpha(RED, 0.15));
         }
-        seg(cv, '88', x + w - 24, y + h - 4, 60, VFD);
-        seg(cv, '1', x + w - 24, y + h - 4, 60, VFD);
     },
 
     /** Where the Spotify panel goes (setting "panel"): the dot-matrix g and the peaks, above the rpm digits. */

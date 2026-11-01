@@ -180,7 +180,7 @@ module.exports = {
         const bw = Math.min(w * 0.36, h - 56), bx = x + w / 2 - bw / 2, by = ly + 46;
         cv.fillRect(bx, by, bw, h - 56, '#0e1014');
         cv.strokeRoundRect(bx, by, bw, h - 56, 3, 2, YEL);
-        cv.text('4', x + w / 2, by + (h - 56) * 0.86, (h - 56) * 0.92, YEL, { align: 'center', font: GEAR, literal: true });
+        L.inkCentred(cv, '4', x + w / 2, by + (h - 56) / 2, (h - 56) * 0.92, YEL, { font: GEAR });
     },
 
     /** Where the Spotify panel goes (setting "panel"): the right column (friction circle, bests). */

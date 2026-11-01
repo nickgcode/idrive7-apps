@@ -70,7 +70,7 @@ module.exports = {
         const cx = x + w / 2, cy = y + h * 0.62, r = h * 0.38;
         cv.arc(cx, cy, r - 6, r, -135, 135, t.track, { round: true });
         cv.arc(cx, cy, r - 6, r, -135, 60, t.accent, { round: true, ramp: t.hotRamp, rampFrom: -135, rampTo: 135 });
-        cv.text('4', cx, cy + 18, 52, t.text, { align: 'center', font: 'gear', literal: true });
+        L.inkCentred(cv, '4', cx, cy, 52, t.text, { font: 'gear' });
     },
 
     /** Where the Spotify panel goes (setting "panel"): the g-meter and the peaks, below the shift lights. */

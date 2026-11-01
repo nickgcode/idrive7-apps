@@ -47,6 +47,8 @@ const Music = require('./music').Music;
 const DIAG = require('./diag');
 const ClusterMap = require('./cluster').ClusterMap;
 const Fuel = require('./fuel');
+const CL = require('./cluster_logo');
+const P = require('./px');
 
 const LOOKS = [require('./look_simple'), require('./look_m'), require('./look_gt'),
     require('./look_heritage'), require('./look_flight'), require('./look_digital'), require('./look_simracing'),
@@ -56,7 +58,7 @@ const lookOf = (id) => LOOKS.find((l) => l.id === id) || LOOKS[0];
 const MPH = 1.609344;
 const TRAIL_MS = 3000;
 const OIL_READY_F = 194, COOLANT_READY_F = 176, HYST_F = 4;
-const VERSION = '0.7.0';
+const VERSION = '0.7.1';
 // Warm-up: the rev limit is COLD_RPM at or below COLD_F oil, rising (250 rpm steps) to WARM_REDLINE at
 // the "oil temp for full revs" setting. Auto-jump: AUTO_MS after READY it opens Drive.
 const COLD_RPM = 4000, COLD_F = 104, WARM_REDLINE = 6000, OIL_FULL_F = 180, AUTO_MS = 5000;
@@ -157,6 +159,21 @@ mgu.run({
         const toDash = () => { if (page === 0) return false; if (ask) { ask = null; return true; } page = page >= 2 ? 1 : 0; return true; };
         if (ctx.onBack) ctx.onBack(toDash);
         if (ui.onVisible) ui.onVisible((st, on) => { if (!on) { page = 0; taps = []; ask = null; } });
+        // the logo in the cluster's map area (cluster_logo.js, setting "clusterLogo"): only while G's Dash
+        // is open, the regular logo or (Pixel look) the pixel emblem, its motion only while standing still
+        let regImg = null;
+        const clogo = new CL.ClusterLogo({ log, app: 'ng_gsdash', images: {
+            regular: () => regImg || (regImg = CL.regularImage(Canvas, L.badge, L.badgeWidth)),
+            pixel: (o) => CL.pixelImage(P, o),
+        } });
+        const logoOn = () => settings.get('clusterLogo') !== 'off';
+        const logoUpdate = (open) => {
+            const d = car.data();
+            clogo.update({ on: !!open && logoOn(), enabled: logoOn(), pixel: look().id === 'pixel', parked: L.isNum(d.speed) && d.speed < 1 });
+        };
+        if (ui.onVisible) ui.onVisible((st, on) => { if (st === 'MAIN') logoUpdate(on); });
+        settings.onChange((k) => { if (k === 'clusterLogo' || k === 'look') logoUpdate(ui.isVisible ? ui.isVisible('MAIN') : true); });
+        process.once('exit', () => clogo.close());
         // settings 0.4.0 had and 0.5.0 dropped (demo, layout, renderer, speedUnit, spotifyPoll, showBadge),
         // and 0.6.0's (lights: the Race colours, LIGHT_STYLE; theme: Simple in M Tricolour, look_simple.js)
         // are app.json "retiredSettings": the kit deletes saved values for them at start (mgu.js Settings)
@@ -701,7 +718,8 @@ mgu.run({
                 if (tap) cv.target(bx, top, bw, bh, () => { ask = { cmd: b[2], at: Date.now() }; }, 'cm:' + b[1].toLowerCase(), u.radius);
             });
             // status
-            const sy = top + bh + 20, sh = S.y + S.h - sy;
+            const lh = ROW_H + 12, ly = S.y + S.h - lh;
+            const sy = top + bh + 20, sh = ly - 16 - sy;
             const tone = v.kind === 'on' ? HUB.GREEN : v.kind === 'pending' || v.kind === 'busy' ? '#ffb020' : v.kind === 'conflict' || v.kind === 'error' ? (t.crit || '#ff3b30') : t.dim;
             cv.roundRect(x0, sy, lw, sh, u.radius, L.withAlpha('#ffffff', 0.04));
             cv.strokeRoundRect(x0, sy, lw, sh, u.radius, 1, L.withAlpha('#ffffff', 0.12));
@@ -712,6 +730,8 @@ mgu.run({
                 if (!l[0] || y > sy + sh - 10) return;
                 cv.text(fitText(cv, l[0], 20, lw - 48), x0 + 24, y, 20, l[1], { literal: true }); y += 34;
             });
+            // the logo in the map area (cluster_logo.js): Off / On, and what it does now
+            logoRow(cv, S, lk, x0, ly, lw, lh);
             // what it needs
             const ix = x0 + lw + 40, iw = S.x + S.w - ix;
             lbl('About', ix, S.y + 20, 18, t.dim);
@@ -758,6 +778,22 @@ mgu.run({
                 if (a && cmap.view().can === a.cmd) cmap.request(a.cmd);
             }, 'cm:confirm', u.radius);
         }
+        /** "Logo in cluster when map is empty": Off / On (setting clusterLogo) and the logo's state. */
+        function logoRow(cv, S, lk, x, y, w, h) {
+            const t = S.t, u = lk.ui, acc = t.sel || t.accent, on = logoOn(), lv = clogo.view();
+            const tone = lv.kind === 'on' ? HUB.GREEN : lv.kind === 'wait' ? '#ffb020' : lv.kind === 'error' ? (t.crit || '#ff3b30') : null;
+            cardOf(lk)(cv, t, x, y, w, h, false);
+            const bw = 104, bx0 = x + w - 2 * bw - 12;
+            rowText(cv, S, lk, x + (tone ? 18 : 0), y, bx0 - x - 12 - (tone ? 18 : 0), h, 'Logo in cluster when map is empty', on ? lv.text : 'Off');
+            if (tone && on) cv.circle(x + 22, y + h - 20, 6, tone);
+            [[false, 'Off', 'off'], [true, 'On', 'on']].forEach((b, i) => {
+                const bx = bx0 + i * (bw + 6), sel = on === b[0], by = y + 10, bh = h - 20;
+                if (sel) { cv.roundRect(bx, by, bw, bh, u.radius, L.withAlpha(acc, 0.22)); cv.strokeRoundRect(bx, by, bw, bh, u.radius, 2, acc); }
+                else cv.roundRect(bx, by, bw, bh, u.radius, L.withAlpha('#ffffff', 0.06));
+                cv.text(u.upper ? b[1].toUpperCase() : b[1], bx + bw / 2, by + bh / 2 + 9, 24, sel ? t.text : t.dim, { font: u.txt, align: 'center', spacing: u.upper ? u.spacing : 0, literal: true });
+                if (!sel) cv.target(bx, by, bw, bh, () => settings.set('clusterLogo', b[2]), 'cl:' + b[2], u.radius);
+            });
+        }
         function fitText(cv, s, size, w, o) {
             s = String(s);
             const opt = Object.assign({ literal: true }, o || {});
@@ -788,6 +824,7 @@ mgu.run({
             const S = state(cv, t, reach);
             G.frame(cv, t, cv.own ? [] : ["G's Dash"], 0, []);
             ownNow = !!cv.own;
+            logoUpdate(visible());
             if (!cv.own) page = 0;
             autoStep(S);
             const P = Object.assign({}, S, { y: SET_Y, h: reach - SET_Y - 6 });
