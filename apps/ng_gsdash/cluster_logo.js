@@ -11,8 +11,8 @@
  *
  * The layer: one "image" layer on the "map" target only (slot 0x100, 1088x480, between the dials),
  * class "ambient" at z -1000, the bottom of the whole stack: every other layer on the map (the CarPlay
- * map of Waze on cluster: content z 0; G's TV: content z 100) is drawn over it. Never exclusive, never
- * contend (it never takes the slot from the stock map: behind it the target only waits, invisible),
+ * map of Waze on cluster: content z 0; G's TV: content z 100) is drawn over it. Never exclusive; it
+ * contends only for the take-back below (else behind the stock map the target only waits, invisible),
  * never "alert", never the panel or the HUD. The image is sent once: the regular logo (the badge's own
  * geometry, 448x240 on black, drawn 1:1 in the middle of the map area: 430 KB once), or with the Pixel
  * look the pixel-art emblem at its cell grid (27x15, 1.6 KB) drawn 16x by the cluster's GPU with
@@ -44,7 +44,21 @@
  *     asks again.
  *   - the stock map (the HMI's own content in slot 0x100): our target's events say it ("parked" or
  *     "waiting", holder "stock"): the logo is then behind it, not drawn, and shows only once the
- *     stock map goes (the area really is empty).
+ *     stock map goes (the area really is empty). One exception, take-back: when the logo already had
+ *     the slot earlier in this run (so no stock map was there then) and the stock content is back in
+ *     front of it, that content is the HMI's mapping put back by another app's take-over: a contending
+ *     app (G's TV playing in the cluster, the CarPlay map) makes the service unmap the HMI's content,
+ *     the HMI maps it again at once parked behind that app, and when that app goes it is shown again
+ *     (the service's README, VERIFIED on the car), drawing nothing outside Map view, and a logo that
+ *     only waits never gets the slot back. So then, while G's Dash is open and no other app draws, the
+ *     logo contends for up to TAKE_MS (the service's own take-over: the stock HMI's content only, at
+ *     most every 3, then 10 s; the HMI's mapping parks behind ours and comes back when the logo goes),
+ *     and stops contending as soon as it is shown. Not again if that fails (the HMI keeps putting its
+ *     content on top: a real stock map) until G's Dash is next opened, and never in a run where the
+ *     logo has not had the slot yet.
+ *   - kept up (_tick, every POLL_MS while open): a connection that is not ready for RECONNECT_MS is
+ *     made again; our layer missing from the service's list (once it was listed) or in error is made
+ *     again (the image sent again); the client itself re-makes it whole after a reconnect.
  *   - after our slot was lost (a door-open warning or a phone reconnecting locks the slot and the
  *     KOMBI unmaps everything; the first to ask afterwards is shown) the logo waits YIELD_MS before
  *     asking again, so the HMI's map goes first.
@@ -69,6 +83,8 @@ const LOGO_W = 448, LOGO_H = 240, BADGE_H = 184;     // the regular logo, 1:1
 const CELL = 16;                                     // the pixel emblem's cell on the cluster
 const FPS_STILL = 1, FPS_ANIM = 12;                  // the image's write ceiling (fps: writes a second at most)
 const POLL_MS = 1000, HOLD_MS = 3000, FRESH_MS = 2000, YIELD_MS = 3000, LOAD_RETRY_MS = 30000;
+const TAKE_MS = 15000;                               // the take-back's longest try (3 of the service's take-overs)
+const RECONNECT_MS = 8000, REMAKE_MS = 2000, ERR_RETRY_MS = 5000, ERR_RETRIES = 3;
 const ANIM_MS = 80;                                  // the parked animation's step
 const SHINE_EVERY = 4200, SHINE_MS = 700, INTRO_MS = 1100;
 
@@ -170,6 +186,16 @@ function mapLayers(text, ownApp) {
     return out;
 }
 
+/** Our own layers on the map in the status text: [{ id, state }]. */
+function ownLayers(text, ownApp) {
+    const out = [];
+    String(text || '').split('\n').forEach((line) => {
+        const m = /^layer (\d+) \w+ of (\S+) on (\w+), \w+ z -?\d+: (\w+)/.exec(line);
+        if (m && m[3] === TARGET && m[2] === ownApp) out.push({ id: +m[1], state: m[4] });
+    });
+    return out;
+}
+
 /**
  * Whether a layer from mapLayers is drawing (see the header): shown (a video one with a frame sent),
  * or waiting / suspended with its frame counter advancing. seen: { key -> { frames, at } } from earlier
@@ -211,7 +237,8 @@ class ClusterLogo {
         this.want = false; this.pixel = false; this.parked = false; this.enabled = true;
         this._reset();
         this.err = null; this.errAt = -1e15;
-        this.stats = { layers: 0, sends: 0, bytes: 0, drops: 0, polls: 0 };
+        this.hadSlot = false;                                // the logo has been shown in this run (take-back)
+        this.stats = { layers: 0, sends: 0, bytes: 0, drops: 0, polls: 0, remakes: 0, reconnects: 0, takeBacks: 0 };
     }
     _reset() {
         this.cr = null; this.ready = false; this.ref = 0; this.kind = ''; this.visible = null;
@@ -220,6 +247,8 @@ class ClusterLogo {
         this.layerState = ''; this.refused = '';
         this.frameKey = ''; this.animAt = 0; this.shownAt = 0;
         this.poll = null; this.anim = null;
+        this.downAt = this.now(); this.madeAt = 0; this.ownSeen = false; this.ownMissing = 0; this.errRetries = 0; this.errAt2 = 0;
+        this.contend = false; this.takeSince = -1; this.takeGaveUp = false;
     }
 
     /**
@@ -249,10 +278,17 @@ class ClusterLogo {
         this.err = null;
         const cr = this.cr = new c.ClusterRender(this.app, c.sock);
         cr.on('ready', () => { if (this.cr !== cr) return; this.ready = true; this.log.info('cluster logo: connected'); this._ask(); });
-        cr.on('disconnected', () => { if (this.cr === cr) { this.ready = false; this.polled = false; } });
+        cr.on('disconnected', () => {
+            if (this.cr !== cr) return;
+            // the client reconnects and makes our layer again whole; until then nothing here is known
+            this.ready = false; this.polled = false; this.downAt = this.now(); this.ownSeen = false; this.ownMissing = 0;
+            this.target = { state: '', holder: '', reason: '', rendering: '' };
+            this.log.info('cluster logo: disconnected');
+        });
         cr.on('layer', (ref, state, reason) => {
             if (this.cr !== cr || ref !== this.ref) return;
             if (state === 'shown' && this.layerState !== 'shown') this.shownAt = this.now();
+            if (state === 'error' && this.layerState !== 'error') this.errAt2 = this.now();
             this.layerState = state || '';
             if (state === 'error') this.log.warn('cluster logo: layer error' + (reason ? ' (' + reason + ')' : ''));
         });
@@ -276,7 +312,9 @@ class ClusterLogo {
                 this.log.info('cluster logo: slot lost (' + state + ') - asking again in ' + (YIELD_MS / 1000) + ' s');
                 this._apply();
             }
+            if (state === 'shown' && this.visible && this.ref) this.hadSlot = true;
             if (state !== was) this.log.info('cluster logo: map ' + state + (holder ? ' behind ' + holder : '') + (reason ? ' (' + reason + ')' : ''));
+            this._takeBack();
         });
         cr.on('refused', (op, ref, reason) => { if (this.cr === cr) { this.refused = (op || '?') + ': ' + (reason || '?'); this.log.warn('cluster logo: refused ' + this.refused); } });
         cr.on('status', (text) => {
@@ -292,13 +330,86 @@ class ClusterLogo {
             if (was !== is) this.log.info('cluster logo: map ' + (is ? 'in use by ' + is : 'free of other apps') +
                 (idle.length ? ' (idle: ' + idle.map((l) => l.app + ' ' + l.state).join(', ') + ')' : ''));
             this.others = others; this.idle = idle;
+            this._own(ownLayers(text, this.app), now);
             this.polled = true;
             this._apply();
         });
-        this.poll = this.T.setInterval(() => this._ask(), POLL_MS);
+        this.downAt = this.now();
+        this.poll = this.T.setInterval(() => this._tick(), POLL_MS);
         try { cr.connect(); } catch (e) { this.log.warn('cluster logo: connect ' + e.message); }
     }
     _ask() { if (this.cr && this.ready) { this.stats.polls++; try { this.cr.status(); } catch (e) { /* next poll */ } } }
+
+    /** Every POLL_MS while open: the connection kept up, the status asked for, our layer kept. */
+    _tick() {
+        if (!this.want || !this.cr) return;
+        const now = this.now();
+        if (!this.ready) {
+            if (now - this.downAt >= RECONNECT_MS) this._restart('not connected for ' + Math.round((now - this.downAt) / 1000) + ' s');
+            return;
+        }
+        this._ask();
+        // our layer in error (the service refused or failed it): made again, a few times per opening
+        if (this.ref && this.layerState === 'error' && this.errRetries < ERR_RETRIES && now - this.errAt2 >= ERR_RETRY_MS) {
+            this.errRetries++;
+            this.log.info('cluster logo: layer in error - making it again (' + this.errRetries + ' of ' + ERR_RETRIES + ')');
+            this._remake();
+        }
+    }
+    /** A new connection (the old one dropped and closed), keeping what this run learnt. */
+    _restart(why) {
+        this.log.info('cluster logo: reconnecting (' + why + ')');
+        this.stats.reconnects++;
+        const cr = this.cr;
+        if (this.poll) this.T.clearInterval(this.poll);
+        if (this.anim) this.T.clearInterval(this.anim);
+        try { if (this.ref) cr.drop(this.ref); } catch (e) { /* closing anyway */ }
+        try { cr.close(); } catch (e) { /* gone */ }
+        this._reset();
+        this._connect();
+    }
+    /** Our layer as the service lists it: missing (once listed) for two polls -> made again. */
+    _own(mine, now) {
+        if (!this.ref) { this.ownMissing = 0; return; }
+        if (mine.length) {
+            this.ownSeen = true; this.ownMissing = 0;
+            if (mine.some((l) => l.state === 'error') && this.layerState !== 'error') { this.layerState = 'error'; this.errAt2 = now; }
+            return;
+        }
+        if (!this.ownSeen || now - this.madeAt < REMAKE_MS) return;
+        if (++this.ownMissing < 2) return;
+        this.log.warn('cluster logo: our layer is gone from the renderer - making it again');
+        this._remake();
+    }
+    _remake() {
+        const old = this.ref, kind = this.kind || (this.pixel ? 'pixel' : 'regular');
+        if (old) { try { this.cr.drop(old); this.stats.drops++; } catch (e) { /* gone already */ } }
+        this.ref = 0; this.ownSeen = false; this.ownMissing = 0; this.contend = false;
+        this.stats.remakes++;
+        this._make(kind, !!this.visible);
+    }
+
+    /**
+     * Take-back (see the header): contend while the stock HMI's content that came back after another app's
+     * take-over sits in front of the logo; stop once shown, after TAKE_MS, or when the logo is not shown.
+     */
+    _takeBack() {
+        if (!this.cr || !this.ref || !this.ready) return;
+        const T = this.target, now = this.now();
+        const behind = (T.state === 'parked' || T.state === 'waiting') && T.holder === 'stock';
+        if (T.state === 'shown' || !this.visible || this.others.length) this.takeSince = -1;
+        else if (behind && this.takeSince < 0 && this.hadSlot && !this.takeGaveUp) {
+            this.takeSince = now;
+            this.stats.takeBacks++;
+            this.log.info('cluster logo: the stock content came back in front after another app - taking the map area back');
+        }
+        if (this.takeSince >= 0 && now - this.takeSince >= TAKE_MS) {
+            this.takeSince = -1; this.takeGaveUp = true; this.hadSlot = false;
+            this.log.info('cluster logo: the stock map stays in front - waiting behind it');
+        }
+        const c = this.takeSince >= 0;
+        if (c !== this.contend) { this.contend = c; this.cr.set(this.ref, { contend: c }); }
+    }
 
     /** Shown or not, the image for the look, the parked animation. */
     _apply() {
@@ -315,6 +426,7 @@ class ClusterLogo {
             if (!vis) this.layerState = 'hidden';
             this.log.info('cluster logo: ' + (vis ? 'shown again' : 'hidden (map in use)'));
         }
+        this._takeBack();
         this._animate();
     }
 
@@ -327,7 +439,8 @@ class ClusterLogo {
         if (!ref) { this.log.warn('cluster logo: image layer refused by the client'); return; }
         this._send(ref, img);
         const old = this.ref;
-        this.ref = ref; this.kind = kind; this.visible = vis; this.frameKey = 'still'; this.animAt = this.now();
+        this.ref = ref; this.kind = kind; this.visible = vis; this.frameKey = 'still'; this.animAt = this.now(); this.madeAt = this.now();
+        this.ownSeen = false; this.ownMissing = 0; this.contend = false;
         this.layerState = vis ? 'new' : 'hidden';
         this.stats.layers++;
         if (old) { this.cr.drop(old); this.stats.drops++; }
@@ -382,7 +495,7 @@ class ClusterLogo {
             return { kind: 'wait', text: (stopped ? appName(this.lastBusy) + ' stopped - logo soon' : 'Logo in a moment') };
         }
         const T = this.target;
-        if ((T.state === 'parked' || T.state === 'waiting') && T.holder === 'stock') return { kind: 'wait', text: 'Behind the stock map' };
+        if ((T.state === 'parked' || T.state === 'waiting') && T.holder === 'stock') return { kind: 'wait', text: this.contend ? 'Taking the map area back' : 'Behind the stock map' };
         if (T.state === 'parked' || T.state === 'waiting') return { kind: 'wait', text: 'Map area taken - waiting' };
         if (T.state === 'shown') {
             if (this.idle.length) return { kind: 'on', text: appName(this.idle[0].app) + ' idle - logo shown' };
@@ -412,5 +525,5 @@ function motion(t, ew) {
     return { key: 'h' + shine, opts: { shine } };
 }
 
-module.exports = { ClusterLogo, loadClient, trusted, mapLayers, drawing, appName, pixelImage, regularImage, placement, motion, cellRaster,
-    TARGET, KLASS, Z, MAP_W, MAP_H, CELL, LOGO_W, LOGO_H, FPS_STILL, FPS_ANIM, POLL_MS, HOLD_MS, YIELD_MS, FRESH_MS };
+module.exports = { ClusterLogo, loadClient, trusted, mapLayers, ownLayers, drawing, appName, pixelImage, regularImage, placement, motion, cellRaster,
+    TARGET, KLASS, Z, MAP_W, MAP_H, CELL, LOGO_W, LOGO_H, FPS_STILL, FPS_ANIM, POLL_MS, HOLD_MS, YIELD_MS, FRESH_MS, TAKE_MS, RECONNECT_MS, ERR_RETRY_MS };
