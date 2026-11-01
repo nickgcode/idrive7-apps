@@ -77,17 +77,6 @@ function fluid(cv, x, y, w, label, v) {
     }
 }
 
-/** The fuel level (Bottom bars: Fuel): one long VFD bar graph, amber at the car's low level, % in segments. */
-function fuelVfd(cv, x, y, w, F) {
-    const ft = L.fuelText(F), n = 40, gap = 4, bw = (w - gap * (n - 1)) / n, c = ft.low ? AMB : VFD;
-    cv.text('FUEL' + (ft.range ? '   RANGE ' + ft.range : '') + (ft.low && ft.has ? '   LOW' : ''), x, y - 16, 20, ft.low && ft.has ? AMB : DIMV, { font: TXT, literal: true });
-    seg(cv, ft.f !== null ? pad(String(Math.round(ft.f * 100)), 3) : '!--', x + w, y - 12, 38, ft.has ? c : DIMV);
-    for (let i = 0; i < n; i++) {
-        const on = ft.f !== null && (i + 0.5) / n <= ft.f;
-        cv.fillRect(x + i * (bw + gap), y, bw, 18, on ? ((i + 0.5) / n < 0.15 ? AMB : c) : GHOST);
-    }
-}
-
 module.exports = {
     id: 'digital',
     name: "Digital '84",
@@ -160,8 +149,7 @@ module.exports = {
         // rpm as digits, oil, coolant
         // (the bottom-right corner is the G's: rpm sits beside the fluids)
         const by = S.y + S.h - 28;
-        if (S.bars === 'fuel') fuelVfd(cv, x0 + 40, by, 780, S.fuel);
-        else { fluid(cv, x0 + 40, by, 380, 'OIL F', S.oil); fluid(cv, x0 + 40 + 400 + 20, by, 380, 'H2O F', S.cool); }
+        fluid(cv, x0 + 40, by, 380, 'OIL F', S.oil); fluid(cv, x0 + 40 + 400 + 20, by, 380, 'H2O F', S.cool);
         cv.text('RPM', x0 + 900, by - 16, 20, DIMV, { font: TXT, literal: true });
         seg(cv, isNum(S.rpm) ? pad(String(Math.round(S.rpm / 10) * 10), 4) : '!---', x0 + 1210, by + 18, 44, S.strobe ? RED : VFD);
         cv.fillRect(x0 + 40, y0 + 168 + ex * 0.25, 1496, 1, withAlpha(VFD, 0.12));

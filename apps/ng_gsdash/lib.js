@@ -13,7 +13,7 @@ const RAD = Math.PI / 180;
 
 /* ---------------- fonts: apps/ng_gsdash/fonts (fonts.pack in a build), tools/bake_gsdash_fonts.py ---------------- */
 const FAMILIES = ['gs_m_num', 'gs_m_gear', 'gs_m_txt', 'gs_m_lt', 'gs_gt_num', 'gs_gt_gear', 'gs_gt_txt',
-    'gs_h_txt', 'gs_h_num', 'gs_h_big', 'gs_f_txt', 'gs_f_num', 'gs_d_seg', 'gs_d_txt', 'gs_s_gear', 'gs_s_num', 'gs_s_txt', 'gs_p_px'];
+    'gs_h_txt', 'gs_d_seg', 'gs_d_txt', 'gs_s_gear', 'gs_s_num', 'gs_s_txt', 'gs_p_px'];
 let fontsLoaded = null;
 /** Registers the looks' fonts with the kit once; returns the families that loaded. */
 function loadFonts(log) {
@@ -150,17 +150,6 @@ function sessionTap(cv, S, x, y, w, h, col, r) {
 }
 
 /**
- * The Drive page's fuel bar, as text (S.fuel from fuel.js): { f: 0..1 or null (no %), value: '62%' /
- * '11.9 GAL' (litres only, no %) / '--', range: '240 MI' or '' (not sent), low, has }. Car data only.
- */
-function fuelText(F) {
-    F = F || {};
-    const f = isNum(F.pct) ? clamp(F.pct / 100, 0, 1) : null;
-    const value = f !== null ? Math.round(F.pct) + '%' : isNum(F.gal) ? F.gal.toFixed(1) + ' GAL' : '--';
-    return { f, value, range: isNum(F.mi) ? Math.round(F.mi) + ' MI' : '', low: !!F.low, has: !!F.has };
-}
-
-/**
  * Text with its ink (the glyphs' drawn boxes, not the advance and the baseline) centred on (cx, cy):
  * the gallery cards' gear digits sit in the middle of their box or ring whatever the font's bearings.
  * Returns the ink's height.
@@ -187,7 +176,7 @@ function inkCentred(cv, s, cx, cy, size, c, o) {
 }
 
 module.exports = {
-    modeTone, sessionTap, fuelText, inkCentred,
+    modeTone, sessionTap, inkCentred,
     loadFonts, FAMILIES, gearText, num0, num1, num2, rpmText, clock, lights, LIGHTS, badge, badgeWidth,
     pt, tick, needle, slant, chamfer, chamferStroke, halfSquare, RAD, withAlpha, mix, clamp, isNum,
     LIGHT_BLUE, DARK_BLUE, RED, LETTER,

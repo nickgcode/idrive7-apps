@@ -1,6 +1,6 @@
 'use strict';
 /**
- * G's Dash - a driver display and car hub for the iDrive 7 (MGU) head unit, in seven looks.
+ * G's Dash - a driver display and car hub for the iDrive 7 (MGU) head unit, in six looks.
  *
  *   - five screens, a horizontal swipe apart (page dots beside the G button, stopping at the ends):
  *     Showcase (the car, Spotify or a 12-hour clock, the logo) · Drive (the look's dash, below;
@@ -13,7 +13,8 @@
  *     from rpm / speed when the car sends none), rpm, speed, a live g-meter with session peaks
  *     (accel / brake / lateral), oil and coolant warm-up state; always mph and degrees F (green = ready)
  *   - looks (setting "look", look_*.js): each its own layout, type, gauges and tab style -
- *     Simple (the original), M Style, GT, Heritage, Flight, Digital '84, Sim Racing, Lumen, Pixel (0.7.0)
+ *     M Style (the default), GT, Digital '84, Sim Racing, Lumen, Pixel (0.7.0). 0.9.0 took Simple, Heritage
+ *     and Flight out: a saved one of those opens as M Style (migrated at start)
  *   - setting "panel": Spotify instead of the g-meter (music.js, G's Music's code shared in by the
  *     build): what plays, art, previous / play-pause / next, a bar to tap or drag; its own QR sign-in
  *   - a hidden diagnostics page (tap "G's Dash <version>" in the Options header 5 times): the drive
@@ -22,8 +23,9 @@
  *   - full screen, touch, GPU renderer (app.json "fullscreen": true): the G button opens Options
  *     (Theme, Engine & warm-up, G-meter & session, Spotify & cluster); Theme has the looks as a
  *     gallery (each card drawn once in software into a picture, so the looks' big fonts don't fill the
- *     renderer's shared glyph texture) and the right panel. Shift lights always in the Race colours,
- *     Simple always in M Tricolour (0.6.0 took those settings out). No demo data.
+ *     renderer's shared glyph texture) and the right panel. Shift lights always in the Race colours
+ *     (0.6.0 took that setting out). The Drive page's bottom bars are oil and coolant (0.9.0 took the
+ *     fuel choice out: no reliable fuel signal for now). No demo data.
  *   - a home-screen widget (app.json startWidget): the G logo, large and centred (widget_logo.js).
  *   - Options > Cluster source (0.8.3, cluster_source.js, setting "clusterSource", default Auto): what the
  *     cluster's centre map area shows - Auto (as before: the logo while G's Dash is open, G's Music over it
@@ -48,11 +50,13 @@
  *     again every G's Dash layer in the cluster (the logo takes the map back from the stock map). On the
  *     diagnostics page, parked: the alignment card (a 1 px outline of the measured geometry) and the
  *     Stock redraw.
- *   - HUD shift lights + gear (0.8.2, hud_shift.js, setting "hudShift", off by default): while open, a thin
- *     band at the top of the HUD with the look's shift lights over the last 2000 rpm before the shift
- *     point (a flash from it) and the gearbox's own gear (none in P, unknown or guessed); any drive mode.
- *     Hidden on values over 300 ms old, and while G's TV plays on the HUD (back about 1 s after). The
- *     panel and the HUD share one scene: turning it on turns the cluster skins off, and the other way.
+ *   - HUD (speed, gear, shift lights) (0.9.0's full HUD; 0.8.2 had the lights + gear; hud_shift.js,
+ *     setting "hudShift", off by default): while open, the whole HUD in the look's style - the speed in
+ *     mph, big, the gearbox's own gear (none in P, unknown or guessed) and a band of shift lights at the
+ *     top over the last 2000 rpm before the shift point (a flash from it); any drive mode. No speed limit.
+ *     Hidden on values over 300 ms old, no speed signal, demo data or a renderer error, and while G's TV
+ *     plays on the HUD (back about 1 s after). The panel and the HUD share one scene: turning it on
+ *     turns the cluster skins off, and the other way.
  *
  * Built on the idrive7-apps kit (kit/runtime). Node 8: no optional chaining, no ?? and no object spread.
  */
@@ -71,22 +75,22 @@ const L = require('./lib');
 const Music = require('./music').Music;
 const DIAG = require('./diag');
 const ClusterMap = require('./cluster').ClusterMap;
-const Fuel = require('./fuel');
 const CL = require('./cluster_logo');
 const CSRC = require('./cluster_source');
 const CS = require('./cluster_skin');
 const HS = require('./hud_shift');
 const P = require('./px');
 
-const LOOKS = [require('./look_simple'), require('./look_m'), require('./look_gt'),
-    require('./look_heritage'), require('./look_flight'), require('./look_digital'), require('./look_simracing'),
+const LOOKS = [require('./look_m'), require('./look_gt'), require('./look_digital'), require('./look_simracing'),
     require('./look_lumen'), require('./look_pixel')];
-const lookOf = (id) => LOOKS.find((l) => l.id === id) || LOOKS[0];
+// M Style is the default look, and where any other id lands (0.9.0: Simple, Heritage and Flight went)
+const DEFAULT_LOOK = 'm';
+const lookOf = (id) => LOOKS.find((l) => l.id === id) || LOOKS.find((l) => l.id === DEFAULT_LOOK);
 
 const MPH = 1.609344;
 const TRAIL_MS = 3000;
 const OIL_READY_F = 194, COOLANT_READY_F = 176, HYST_F = 4;
-const VERSION = '0.8.4';
+const VERSION = '0.9.0';
 // Warm-up: the rev limit is COLD_RPM at or below COLD_F oil, rising (250 rpm steps) to WARM_REDLINE at
 // the "oil temp for full revs" setting. Auto-jump: AUTO_MS after READY it opens Drive.
 const COLD_RPM = 4000, COLD_F = 104, WARM_REDLINE = 6000, OIL_FULL_F = 180, AUTO_MS = 5000;
@@ -113,7 +117,7 @@ const ENGINE = [
     ['coolantReady', 'Coolant ready', (v) => v + ' °F'],
 ];
 const GSCALE = ['gScale', 'G-meter scale', (v) => Number(v).toFixed(1) + ' g'];
-// fixed since 0.6.0 (the settings went): the shift lights' Race colours, the Simple look's M Tricolour
+// fixed since 0.6.0 (the setting went): the shift lights' Race colours
 const LIGHT_STYLE = 'f1';
 const TAPS = 5, TAP_MS = 3000;          // the diagnostics page: taps on the version in the Options header
 
@@ -123,9 +127,12 @@ mgu.run({
         // car data only: no demo feed (opts.demo false), a value not sent shows '--'
         const car = new Car(ctx, ['rpm', 'speed', 'temps', 'accel', 'gear', 'drivemode', 'tpms', 'units'], { demo: false });
         L.loadFonts(log);
-        // the fuel level and range (fuel.js): only for the Drive page's 'Bottom bars: Fuel' choice
-        const fuel = new Fuel();
-        fuel.watch(ctx, log);
+        // 0.9.0: a saved look that is gone (simple, heritage, flight) or unknown becomes M Style
+        const savedLook = settings.get('look');
+        if (!LOOKS.some((l) => l.id === savedLook)) {
+            log.info('look ' + savedLook + ' is gone: M Style');
+            settings.set('look', DEFAULT_LOOK);
+        }
 
         const look = () => lookOf(settings.get('look'));
         const palette = () => { const l = look(); return typeof l.palette === 'function' ? l.palette(settings) : l.palette; };
@@ -201,7 +208,7 @@ mgu.run({
         // skinMode from the diagnostics page: 'skin', 'align' (the alignment card), 'stock' (the Stock redraw)
         const cskin = new CS.ClusterSkin({ log, app: 'ng_gsdash', load: (f) => PNG.decode(fs.readFileSync(path.join(__dirname, f))) });
         const skinOn = () => settings.get('clusterSkin') !== 'off';
-        // the HUD shift lights + gear (0.8.2, hud_shift.js, setting "hudShift", off by default): the panel and
+        // the HUD - speed, gear, shift lights (0.9.0; hud_shift.js, setting "hudShift", off by default): the panel and
         // the HUD share one scene, so they and the cluster skins are never on together (one on turns the other off)
         const hud = new HS.HudShift({ log, app: 'ng_gsdash', load: (f) => PNG.decode(fs.readFileSync(path.join(__dirname, f))) });
         const hudOn = () => settings.get('hudShift') === 'on';
@@ -254,8 +261,8 @@ mgu.run({
         if (ui.onVisible) ui.onVisible((st, on) => { if (st === 'MAIN') logoUpdate(on); });
         settings.onChange((k) => {
             // one on turns the other off (whichever way it was set: Options or the settings list)
-            if (k === 'hudShift' && hudOn() && skinOn()) { settings.set('clusterSkin', 'off'); say('Cluster skins turned off', 'HUD shift lights on'); }
-            if (k === 'clusterSkin' && skinOn() && hudOn()) { settings.set('hudShift', 'off'); say('HUD shift lights turned off', 'Cluster skins on'); }
+            if (k === 'hudShift' && hudOn() && skinOn()) { settings.set('clusterSkin', 'off'); say('Cluster skins turned off', 'HUD on'); }
+            if (k === 'clusterSkin' && skinOn() && hudOn()) { settings.set('hudShift', 'off'); say('HUD turned off', 'Cluster skins on'); }
             if (k === 'clusterSource') publishSource('change');
             if (k === 'clusterSource' || k === 'clusterLogo' || k === 'clusterSkin' || k === 'hudShift' || k === 'look' || k === 'redline' || k === 'shiftBefore') logoUpdate(ui.isVisible ? ui.isVisible('MAIN') : true);
         });
@@ -286,7 +293,7 @@ mgu.run({
                 .catch((e) => { log.warn('guidance ' + g[3] + ': ' + e); clogo.guideLink(g[3], 'error', String(e && e.message || e)); });
         });
         // settings 0.4.0 had and 0.5.0 dropped (demo, layout, renderer, speedUnit, spotifyPoll, showBadge),
-        // and 0.6.0's (lights: the Race colours, LIGHT_STYLE; theme: Simple in M Tricolour, look_simple.js)
+        // 0.6.0's (lights: the Race colours, LIGHT_STYLE; theme) and 0.9.0's (bars: the fuel choice)
         // are app.json "retiredSettings": the kit deletes saved values for them at start (mgu.js Settings)
         /** A press on the G (or Back): shown pressed for a moment, then the page changes. */
         const press = (to, key) => { gDown = Date.now(); downKey = key; setTimeout(() => { page = to; }, 140); };
@@ -379,8 +386,6 @@ mgu.run({
                 sessionTap: cv.own ? () => { since = Date.now(); sessionAt = since; log.info('session clock reset (tap)'); } : null,
                 sessionFlash: sessionAt && now - sessionAt < SESSION_FLASH_MS ? 1 - (now - sessionAt) / SESSION_FLASH_MS : 0,
                 panel: settings.get('panel') === 'spotify' ? 'spotify' : 'g',
-                // the Drive page's bottom bars: oil & coolant, or the fuel level (Warm-up always shows oil & coolant)
-                bars: settings.get('bars') === 'fuel' ? 'fuel' : 'temps', fuel: fuel.state(),
                 // the drive mode badge: a label only when the car sent a mode we could read (car.js MODE_LABEL)
                 mode: d.driveMode || null, modeTone: L.modeTone(d.driveMode || null),
                 d,
@@ -625,12 +630,12 @@ mgu.run({
             lbl(done ? 'Refreshed' : 'Refresh', fb.x + fb.w / 2, fb.y + Math.round(RH3 * 0.44), u.size, t.text, { align: 'center' });
             lbl('cluster', fb.x + fb.w / 2, fb.y + Math.round(RH3 * 0.81), Math.round(u.size * 0.72), t.dim, { align: 'center' });
             cv.target(fb.x, fb.y, fb.w, fb.h, () => { gDown = Date.now(); downKey = 'opt:refresh'; refreshCluster(); }, 'opt:refresh', u.radius);
-            // the cluster skins and the HUD shift lights (0.8.2): one on turns the other off
+            // the cluster skins and the HUD (speed, gear, shift lights): one on turns the other off
             toggleRow(cv, S, lk, x2, s3(4), cw, RH3, 'Cluster skins', 'cs', skinOn(), cskin.view(), (v) => settings.set('clusterSkin', v));
-            toggleRow(cv, S, lk, x2, s3(5), cw, RH3, 'HUD shift lights + gear', 'hs', hudOn(), hud.view(), (v) => settings.set('hudShift', v));
+            toggleRow(cv, S, lk, x2, s3(5), cw, RH3, 'HUD (speed, gear, shift lights)', 'hs', hudOn(), hud.view(), (v) => settings.set('hudShift', v));
         }
         const REFRESHED_MS = 2600;
-        /** An Off / On row ("Cluster skins": clusterSkin, "HUD shift lights + gear": hudShift) and what it does now. */
+        /** An Off / On row ("Cluster skins": clusterSkin, "HUD (speed, gear, shift lights)": hudShift) and what it does now. */
         function toggleRow(cv, S, lk, x, y, w, h, title, id, on, sv, set) {
             const t = S.t, u = lk.ui, acc = t.sel || t.accent;
             const tone = on ? logoTone(t, sv.kind) : null;
@@ -654,7 +659,7 @@ mgu.run({
         function themePage(cv, S, lk) {
             const t = S.t, u = lk.ui, lbl = lblOf(cv, u), card = cardOf(lk), acc = t.sel || t.accent, cur = lk.id;
             header(cv, S, lk, lbl, card, 'Theme', 1);
-            const x0 = S.x, top = S.y + 34, cols = 5, g = 14;
+            const x0 = S.x, top = S.y + 34, cols = 3, g = 14;            // six looks: 3 x 2 (0.9.0)
             lbl('Look', x0, S.y + 20, 18, t.dim);
             LOOKS.forEach((l, i) => {
                 const cx = x0 + (i % cols) * (TILE_W + g), cy = top + Math.floor(i / cols) * (TILE_H + g), on = l.id === cur;
@@ -690,15 +695,6 @@ mgu.run({
             ['Spotify also shows on the G-force page.', 'Showcase always shows Spotify.'].forEach((l2, k) => {
                 if (ny + k * 26 < S.y + S.h) cv.text(fitText(cv, l2, 18, pw), px, ny + k * 26, 18, t.dim, { literal: true });
             });
-            // the Drive page's bottom bars: oil & coolant, or the fuel level (Warm-up keeps oil & coolant)
-            const by = ny + 82, bh = 60, bw = (pw - g) / 2, cur2 = settings.get('bars') === 'fuel' ? 'fuel' : 'temps';
-            lbl('Bottom bars on Drive', px, by - 18, 18, t.dim);
-            [['temps', 'Oil & coolant'], ['fuel', 'Fuel']].forEach((o, i) => {
-                const bx = px + i * (bw + g), on = cur2 === o[0];
-                if (on) { cv.roundRect(bx, by, bw, bh, u.radius, L.withAlpha(acc, 0.22)); cv.strokeRoundRect(bx, by, bw, bh, u.radius, 3, acc); } else card(cv, t, bx, by, bw, bh, false);
-                lbl(o[1], bx + bw / 2, by + bh / 2 + 8, u.size, on ? t.text : t.dim, { align: 'center' });
-                cv.target(bx, by, bw, bh, () => settings.set('bars', o[0]), 'bars:' + o[0], u.radius);
-            });
         }
 
         /*
@@ -718,8 +714,11 @@ mgu.run({
                 l.swatch(r, lt, 0, 6, cw, ch - 74);
                 const nu = l.ui;
                 const nm = nu.upper ? l.name.toUpperCase() : l.name, nsz = nu.nameSize || 26, nf = { font: nu.nameFont || nu.txt, spacing: nu.upper ? nu.spacing : 0, literal: true };
-                const nw = r.textWidth(nm, nsz, nf), fs = nw > cw - 70 ? Math.max(16, Math.floor(nsz * (cw - 70) / nw)) : nsz;
-                r.text(nm, 16, ch - 22, fs, lt.text, nf);
+                // the name: at the left, or centred (ui.nameAlign 'center', 0.9.0) on the looks whose swatch is
+                // centred (GT, Sim Racing, Lumen); the chosen card's tick (bottom right) still clears it
+                const mid = nu.nameAlign === 'center', room = mid ? cw - 2 * 48 : cw - 70;
+                const nw = r.textWidth(nm, nsz, nf), fs = nw > room ? Math.max(16, Math.floor(nsz * room / nw)) : nsz;
+                r.text(nm, mid ? cw / 2 : 16, ch - 22, fs, lt.text, mid ? Object.assign({ align: 'center' }, nf) : nf);
                 const W = Math.min(1024, Math.round(cw * sc)), H = Math.min(1024, Math.round(ch * sc));
                 const c = new Canvas(W, H);
                 record.play(r.words(), c, W / cw);
@@ -809,8 +808,8 @@ mgu.run({
             put(x + 14, y, w - 28, 'shown: ' + (dg.mode || '(none: no single mode read)'), t.text, 19); y += LH + 2;
             put(x + 14, y, w - 28, 'FES: ' + sub, t.dim); y += LH + 2;
             put(x + 14, y, w - 28, 'Car data only. No demo, no estimates.', t.dim); y += LH + 12;
-            // 0.8.4: the Cluster renderer's whole refusal for the cluster skins and the HUD lights (Options shows it short)
-            [['Skins', cskin.refusal()], ['HUD lights', hud.refusal()]].forEach((r) => {
+            // 0.8.4: the Cluster renderer's whole refusal for the cluster skins and the HUD (Options shows it short)
+            [['Skins', cskin.refusal()], ['HUD', hud.refusal()]].forEach((r) => {
                 if (!r[1]) return;
                 let rest = r[0] + ' refused: ' + r[1], n = 0;
                 while (rest && n < 3) {

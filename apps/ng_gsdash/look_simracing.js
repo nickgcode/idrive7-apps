@@ -87,16 +87,6 @@ function tempBlock(cv, x, y, w, h, label, v) {
     block(cv, x, y, w, h, label + (v.ok === false ? '  COLD' : v.ok === true ? '  OK' : ''), isNum(v.f) ? Math.round(v.f) + '°F' : '--', tone);
 }
 
-/** The fuel level (Bottom bars: Fuel): one data block across both, a bar inside, red at the car's low level. */
-function fuelBlock(cv, x, y, w, h, F) {
-    const ft = L.fuelText(F), tone = !ft.has ? null : ft.low ? RED : GRN;
-    block(cv, x, y, w, h, 'FUEL' + (ft.low && ft.has ? '  LOW' : '') + (ft.range ? '  ·  ' + ft.range : ''), ft.value, tone);
-    const bx = x + 16, bw = w - 16 - 130, by = y + h - 22;
-    cv.fillRect(bx, by, bw, 10, '#1b1f26');
-    if (ft.f) cv.fillRect(bx, by, bw * ft.f, 10, tone || WHITE);
-    for (let k = 1; k < 4; k++) cv.fillRect(bx + bw * k / 4, by, 1, 10, BG);
-}
-
 /** Centre-zero bar for the longitudinal g: green to the right (accelerating), red to the left (braking). */
 function deltaBar(cv, S, cx, y, w) {
     const h = 26, lon = G.smooth('gs-s-lon', S.gLong, 10), f = isNum(lon) ? clamp(lon / S.gMax, -1, 1) : 0;
@@ -150,7 +140,7 @@ module.exports = {
     blurb: 'A sim-racing HUD: LED shift strip, segmented rpm, big boxed gear, data blocks',
     palette,
     dotsAbove: true,            // the hub's page dots sit above the G (the LAT / LONG readout is left of it)
-    ui: { txt: TXT, num: NUM, size: 20, spacing: 1.5, upper: true, radius: 4, nameFont: TXT, nameSize: 30 },
+    ui: { txt: TXT, num: NUM, size: 20, spacing: 1.5, upper: true, radius: 4, nameFont: TXT, nameSize: 30, nameAlign: 'center' },
     badgeLetter: WHITE,
 
     background(cv, t, reach) {
@@ -203,8 +193,7 @@ module.exports = {
         block(cv, lx, by0, bw, bh, 'TOP', isNum(S.peak.speed) && S.peak.speed > 0 ? String(Math.round(S.peak.speed)) : '--', null);
         block(cv, lx + bw + bgap, by0, bw, bh, 'SESSION', L.clock(S.session), null);
         L.sessionTap(cv, S, lx + bw + bgap, by0, bw, bh, YEL);     // a tap on the block: the clock back to 0
-        if (S.bars === 'fuel') fuelBlock(cv, lx, by0 + bh + bgap, lw, bh, S.fuel);
-        else { tempBlock(cv, lx, by0 + bh + bgap, bw, bh, 'OIL', S.oil); tempBlock(cv, lx + bw + bgap, by0 + bh + bgap, bw, bh, 'WATER', S.cool); }
+        tempBlock(cv, lx, by0 + bh + bgap, bw, bh, 'OIL', S.oil); tempBlock(cv, lx + bw + bgap, by0 + bh + bgap, bw, bh, 'WATER', S.cool);
 
         // ---- centre: the gear in its box; white, yellow while the lights fill, red while they flash
         const filling = !st.strobe && isNum(S.rpm) && S.rpm > S.shift - (S.range || 2000);

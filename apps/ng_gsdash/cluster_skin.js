@@ -1,8 +1,8 @@
 'use strict';
 /**
  * cluster_skin.js - G's Dash 0.8.1's cluster skins: the instrument cluster's own dials redrawn in the
- * G's Dash look (all ten: Stock, Simple, M Style, GT, Heritage, Flight, Digital '84, Sim Racing, Lumen,
- * Pixel), through the separately installed Cluster renderer tool (the client as cluster_logo.js loads
+ * G's Dash look (all seven: Stock, M Style, GT, Digital '84, Sim Racing, Lumen, Pixel; 0.9.0 took Simple,
+ * Heritage and Flight out), through the separately installed Cluster renderer tool (the client as cluster_logo.js loads
  * it). While G's Dash is open, the setting "clusterSkin" is on and the cluster shows its M / Sport layout
  * (the one measured; 0.8.4: any drive mode, the car coded to that layout in all), parked and (0.8.1) driving: the needles, fills, digital
  * speed and gear follow the live values. Anything else (another layout, no speed signal, values older
@@ -53,7 +53,7 @@ const LIVE_MS = 300, RESHOW_MS = 500;
 const SPEED_PCT = 0, SPEED_ADD = 0;                      // the speed shown: true * (1 + PCT / 100) + ADD mph
 const HOLD_MS = 3000, RECONNECT_MS = 8000, LOAD_RETRY_MS = 30000, ERR_RETRIES = 3;
 /** G's Dash's look ids -> the skin's (skin_looks.js) */
-const LOOK_SKIN = { simple: 'simple', m: 'm', gt: 'gt', heritage: 'heritage', flight: 'flight', digital: 'digital', simracing: 'simracing', lumen: 'lumen', pixel: 'pixel' };
+const LOOK_SKIN = { m: 'm', gt: 'gt', digital: 'digital', simracing: 'simracing', lumen: 'lumen', pixel: 'pixel' };
 
 /** Other apps' layers on the panel or the HUD in a status text (same lines as cluster_logo.js reads). */
 function panelLayers(text, ownApp) {
@@ -173,7 +173,7 @@ class ClusterSkin {
         const s = this.st || {};
         if (s.mode === 'align') return 'align';
         if (s.mode === 'stock') return 'stock';
-        return LOOK_SKIN[s.look] || 'simple';
+        return LOOK_SKIN[s.look] || 'm';          // M Style: the default look (0.9.0)
     }
 
     _connect() {

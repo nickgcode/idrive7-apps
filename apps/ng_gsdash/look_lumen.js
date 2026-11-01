@@ -146,20 +146,6 @@ function tempLine(cv, S, x, y, w, label, v) {
     if (f > 0) { cv.roundRect(x, y + 11, w * f, 10, 5, withAlpha(c, 0.18)); cv.roundRect(x, y + 14, w * f, 4, 2, c); }
 }
 
-/** The fuel level (Bottom bars: Fuel): a light line like the temperatures', red at the car's low level; range under it. */
-function fuelLine(cv, S, x, y, w, F) {
-    const ft = L.fuelText(F), c = ft.low ? RED : ICE;
-    cv.text('FUEL', x, y, 15, DIM, { font: TXT, spacing: 4, literal: true });
-    cv.text(ft.value, x + w, y + 2, 24, !ft.has ? DIM : ft.low ? RED : WHITE, { align: 'right', font: NUM, literal: true });
-    cv.roundRect(x, y + 14, w, 4, 2, '#141c33');
-    if (ft.f) { cv.roundRect(x, y + 11, w * ft.f, 10, 5, withAlpha(c, 0.18)); cv.roundRect(x, y + 14, w * ft.f, 4, 2, c); }
-    cv.text('RANGE', x, y + 56, 15, DIM, { font: TXT, spacing: 4, literal: true });
-    // the number in the numerals, the unit in the label type (the numerals have no letters)
-    const rn = ft.range ? ft.range.replace(' MI', '') : '--', rw = cv.textWidth(rn, 24, { font: NUM, literal: true });
-    cv.text(rn, x + w, y + 58, 24, ft.range ? WHITE : DIM, { align: 'right', font: NUM, literal: true });
-    if (ft.range) cv.text('MI', x + w - rw - 8, y + 56, 15, DIM, { align: 'right', font: TXT, spacing: 3, literal: true });
-}
-
 function gmeter(cv, S, cx, cy, r) {
     const max = S.gMax;
     cv.blit(G.layer(['gs-lu-gm', r, max].join('|'), 2 * r + 20, 2 * r + 20, (c) => {
@@ -179,7 +165,7 @@ module.exports = {
     name: 'Lumen',
     blurb: 'The showpiece: a glowing rpm ring with a light sweep, drifting light, glass plates',
     palette,
-    ui: { txt: TXT, num: NUM, size: 20, spacing: 3, upper: true, radius: 14, nameFont: TXT, nameSize: 28 },
+    ui: { txt: TXT, num: NUM, size: 20, spacing: 3, upper: true, radius: 14, nameFont: TXT, nameSize: 28, nameAlign: 'center' },
     badgeLetter: WHITE,
 
     background(cv, t, reach) { background(cv, t, reach); },
@@ -244,8 +230,7 @@ module.exports = {
         cv.text(S.gearText, gx + gw / 2, gy + gh / 2 + gs * 0.40, gs, withAlpha(gcol, 0.10), { align: 'center', font: GEAR, literal: true });
         cv.text(S.gearText, gx + gw / 2, gy + gh / 2 + gs * 0.36, gs, gcol, { align: 'center', font: GEAR, literal: true });
         const ty = g.bottom - 104;
-        if (S.bars === 'fuel') fuelLine(cv, S, gx + 4, ty, gw - 8, S.fuel);
-        else { tempLine(cv, S, gx + 4, ty, gw - 8, 'OIL', S.oil); tempLine(cv, S, gx + 4, ty + 56, gw - 8, 'COOLANT', S.cool); }
+        tempLine(cv, S, gx + 4, ty, gw - 8, 'OIL', S.oil); tempLine(cv, S, gx + 4, ty + 56, gw - 8, 'COOLANT', S.cool);
         // right: peaks and the g-meter (or Spotify there)
         if (S.panel === 'spotify') return;
         const px = g.rx + 20, pw = S.x + S.w - px, ph = g.bottom - S.y - 24 - 84;

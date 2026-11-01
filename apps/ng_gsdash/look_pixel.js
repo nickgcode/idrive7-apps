@@ -179,21 +179,6 @@ function stat(cv, S, x, y, w, label, v) {
     if (v.ok === false || ok) ptxt(cv, ok ? 'OK' : 'COLD', x + w, by + 26, 3, ok ? GRN : CYAN, { align: 'right' });
 }
 
-/** The fuel level (Bottom bars: Fuel): one long block bar like the stat bars, red and a blinking LOW! at the car's low level. */
-function fuelStat(cv, S, x, y, w, F) {
-    const ft = L.fuelText(F), n = 24, c = ft.low ? RED : GRN, hi = ft.low ? '#ffb0b8' : '#b6ffcf';
-    ptxt(cv, 'FUEL', x, y, 3, DIM);
-    ptxt(cv, ft.value, x + w, y - 4, 4, !ft.has ? DIM : ft.low ? RED : WHITE, { align: 'right' });
-    const by = y + 34, gap = 4, bw = Math.floor((w - gap * (n - 1)) / n);
-    for (let i = 0; i < n; i++) {
-        const on = ft.f !== null && (i + 0.5) / n <= ft.f, bx = x + i * (bw + gap);
-        cv.fillRect(bx, by, bw, 16, on ? c : '#1d1a40');
-        if (on) cv.fillRect(bx, by, bw, 4, hi);
-    }
-    if (ft.range) ptxt(cv, ft.range, x + w, by + 26, 3, CYAN, { align: 'right' });
-    if (ft.low && ft.has && S.blink) ptxt(cv, 'LOW!', x, by + 26, 3, RED);
-}
-
 module.exports = {
     id: 'pixel',
     name: 'Pixel',
@@ -290,8 +275,7 @@ module.exports = {
 
         // ---- bottom left: oil and coolant stat bars
         const by = bottom - 92;
-        if (S.bars === 'fuel') fuelStat(cv, S, gx + 300, by, 660, S.fuel);
-        else { stat(cv, S, gx + 300, by, 300, 'OIL', S.oil); stat(cv, S, gx + 660, by, 300, 'COOLANT', S.cool); }
+        stat(cv, S, gx + 300, by, 300, 'OIL', S.oil); stat(cv, S, gx + 660, by, 300, 'COOLANT', S.cool);
 
         // ---- right: the g radar and the peaks (Spotify takes this place when chosen)
         if (S.panel === 'spotify') return;

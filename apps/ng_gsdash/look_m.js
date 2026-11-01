@@ -94,19 +94,6 @@ function temp(cv, t, x, y, w, label, v) {
     for (let i = 0; i < n; i++) L.slant(cv, x + i * (sw + gap), y, sw, 14, K, isNum(v.f) && (i + 0.5) / n <= f ? c : t.track);
 }
 
-/** The fuel level (Bottom bars: Fuel): one slanted segment bar across both slots, red at the car's low level. */
-function fuelBar(cv, t, x, y, w, F) {
-    const ft = L.fuelText(F), n = 32, gap = 4, sw = (w - gap * (n - 1) - K * 14) / n, c = ft.low ? RD : '#eef1f5';
-    cv.text('FUEL', x, y - 14, 15, t.dim, { font: TXT, spacing: 3, literal: true });
-    const vx = x + w;
-    cv.text(ft.value, vx, y - 12, 26, ft.low ? RD : ft.has ? t.text : t.dim, { align: 'right', font: NUM, literal: true });
-    if (ft.range) {
-        const vw = cv.textWidth(ft.value, 26, { font: NUM, literal: true });
-        cv.text(ft.range, vx - vw - 22, y - 14, 15, t.dim, { align: 'right', font: TXT, spacing: 3, literal: true });
-    }
-    for (let i = 0; i < n; i++) L.slant(cv, x + i * (sw + gap), y, sw, 14, K, ft.f !== null && (i + 0.5) / n <= ft.f ? c : t.track);
-}
-
 /**
  * The drive mode as a slanted tag with the tricolour stripes in front: filled red / blue for SPORT+ /
  * SPORT. The whole group (stripes and tag) is centred on cx, its bottom at y; h: its height.
@@ -194,8 +181,7 @@ module.exports = {
         const tw = 330, wl = x0 + 40, wr = x0 + 1000 - 40, tg = Math.round((wr - wl - 2 * tw) / 3);
         const ox = wl + tg, cx2 = ox + tw + tg;
         cv.fillRect(ox, line, cx2 + tw - ox, 1, '#1e2128');
-        if (S.bars === 'fuel') fuelBar(cv, t, ox, by, cx2 + tw - ox, S.fuel);
-        else { temp(cv, t, ox, by, tw, 'OIL', S.oil); temp(cv, t, cx2, by, tw, 'COOLANT', S.cool); }
+        temp(cv, t, ox, by, tw, 'OIL', S.oil); temp(cv, t, cx2, by, tw, 'COOLANT', S.cool);
         // the drive mode: under the speed's unit, centred on the speed, midway between it and the warm-up
         // rule (clear of the Spotify panel, which starts at x0 + 1000); smaller where that gap is tight
         const th = line - unitY >= 56 ? 30 : 24;

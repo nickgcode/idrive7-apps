@@ -5,8 +5,7 @@ tools/bake_gsdash_fonts.py. Each is used under its own licence, included here:
 
   gs_m_*   Saira (Omnibus-Type)                     SIL Open Font License 1.1   LICENSE-Saira.txt
   gs_gt_*  Chakra Petch (Cadson Demak)              SIL Open Font License 1.1   LICENSE-ChakraPetch.txt
-  gs_h_*   Jost (Owen Earl / indestructible type*)  SIL Open Font License 1.1   LICENSE-Jost.txt
-  gs_f_*   B612 / B612 Mono (Airbus, Intactile)     SIL Open Font License 1.1   LICENSE-B612.txt
+  gs_h_txt Jost (Owen Earl / indestructible type*)  SIL Open Font License 1.1   LICENSE-Jost.txt
   gs_s_*   Titillium Web (Accademia di Belle Arti   SIL Open Font License 1.1   LICENSE-TitilliumWeb.txt
            di Urbino)
   gs_p_px  G's Dash pixel font (original, drawn for   -                     px.js
