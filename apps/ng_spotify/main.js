@@ -390,7 +390,8 @@ mgu.run({
                 labels();
             } catch (e) {
                 log.warn(what + ': ' + (e.code || '') + ' ' + e.message);
-                if (errs && errs[e.status]) say(errs[e.status]);
+                if (Spotify.isStartError(e)) say(e.code === 'SCOPE' ? e.message + ' (Settings > Sign in with phone)' : e.message, 5000);
+                else if (errs && errs[e.status]) say(errs[e.status]);
                 else if (e.status === 403) say('Spotify Premium is needed for ' + what);
                 else if (e.status === 404) say('No active Spotify device - start playing on your phone');
                 else if (e.code === 'RATE') say('Spotify says: too many requests - try again in a moment');
@@ -398,10 +399,21 @@ mgu.run({
             }
             soon();
         }
+        /** Pause, or play: spotify.js start() resumes, else the last track, else the Liked Songs shuffled, on a device it finds. */
         const togglePlay = () => {
-            const playing = pb && pb.playing;
-            return run(playing ? 'pause' : 'play', () => (playing ? sp.pause() : sp.play()), () => { pb.progress = position(); pb.at = Date.now(); pb.playing = !playing; });
+            const was = pb, playing = !!(pb && pb.playing);
+            if (playing) return run('pause', () => sp.pause(), () => { pb.progress = position(); pb.at = Date.now(); pb.playing = false; });
+            return run('play', async () => started(await sp.start()), () => { if (pb === was) { pb.at = Date.now(); pb.playing = true; } });
         };
+        /** What Play started, as a toast when it was more than a resume on the same device. */
+        function started(r) {
+            if (!r) return;
+            const on = r.device ? ' on ' + r.device : '';
+            const again = r.missing && r.missing.length ? '. Sign in again to resume your last track' : '';
+            if (r.how === 'liked') say('Shuffling your Liked Songs' + on + again, 5000);
+            else if (r.how === 'recent') say('Playing your last track' + on);
+            log.info('play: ' + r.how + (r.device ? ' (' + r.device + ')' : '') + (r.missing && r.missing.length ? ', scope missing: ' + r.missing.join(' ') : ''));
+        }
         /** Seek to ms (the progress bar: a tap, or a drag let go). The bar goes there at once. */
         const seekTo = (ms) => {
             if (!pb || !pb.duration) return;
@@ -410,7 +422,13 @@ mgu.run({
             if (status === 'ok' || status === 'idle') { pb.progress = ms; pb.at = Date.now(); }
             return run('seek', () => sp.seek(ms), () => { pb.progress = ms; pb.at = Date.now(); });
         };
-        const skip = (dir) => run(dir > 0 ? 'next' : 'previous', () => (dir > 0 ? sp.next() : sp.previous()), () => { pb.progress = 0; pb.at = Date.now(); });
+        /** Next, or Previous as other players: past 3 s into the track back to its start (the bar at 0 at once), else the track before (spotify.js back). */
+        const skip = (dir) => {
+            if (dir > 0) return run('next', () => sp.next(), () => { pb.progress = 0; pb.at = Date.now(); });
+            const at = position();
+            if (pb && Spotify.restarts(at) && (status === 'ok' || status === 'idle')) { pb.progress = 0; pb.at = Date.now(); }
+            return run('previous', () => sp.back(at), () => { pb.progress = 0; pb.at = Date.now(); });
+        };
         const toggleShuffle = () => {
             const on = !(pb && pb.shuffle);
             return run('shuffle', () => sp.shuffle(on), () => { pb.shuffle = on; });
@@ -768,8 +786,8 @@ mgu.run({
             artBox(cv, t, Q, false);
             const X = Q.X, y0 = Q.A.y;
             cv.text('Nothing playing', X, y0 + 104, 56, t.text, { font: 'bold' });
-            cv.text(fit(cv, 'Start Spotify on your phone (or any device), then tap Play.', 28, Q.W), X, y0 + 160, 28, t.dim, { literal: true });
-            cv.text(fit(cv, 'Play resumes your last device if Spotify still has it.', 24, Q.W), X, y0 + 200, 24, t.dim, { literal: true });
+            cv.text(fit(cv, 'Tap Play to pick up your last track, or shuffle your Liked Songs.', 28, Q.W), X, y0 + 160, 28, t.dim, { literal: true });
+            cv.text(fit(cv, 'Plays on your phone (or the last Spotify device) - keep Spotify open there.', 24, Q.W), X, y0 + 200, 24, t.dim, { literal: true });
         }
 
         /**

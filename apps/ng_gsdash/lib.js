@@ -139,8 +139,18 @@ function modeTone(label) {
     return 'plain';
 }
 
+/**
+ * A session clock's tap target: a tap resets the clock to zero (S.sessionTap, set on the full-screen
+ * page only), then a short flash over the rect (S.sessionFlash, 1 down to 0). x, y, w, h: page px,
+ * the clock's whole cell (a generous target); col: the flash's colour; r: corner radius.
+ */
+function sessionTap(cv, S, x, y, w, h, col, r) {
+    if (S.sessionFlash > 0) cv.roundRect(x, y, w, h, r || 0, withAlpha(col || '#ffffff', 0.4 * S.sessionFlash));
+    if (S.sessionTap && cv.target) cv.target(x, y, w, h, S.sessionTap, 'session', r || 0);
+}
+
 module.exports = {
-    modeTone,
+    modeTone, sessionTap,
     loadFonts, FAMILIES, gearText, num0, num1, num2, rpmText, clock, lights, LIGHTS, badge, badgeWidth,
     pt, tick, needle, slant, chamfer, chamferStroke, halfSquare, RAD, withAlpha, mix, clamp, isNum,
     LIGHT_BLUE, DARK_BLUE, RED, LETTER,

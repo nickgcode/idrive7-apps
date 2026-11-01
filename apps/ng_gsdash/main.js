@@ -3,8 +3,8 @@
  * G's Dash - a driver display and car hub for the iDrive 7 (MGU) head unit, in seven looks.
  *
  *   - five screens, a horizontal swipe apart (page dots beside the G button, stopping at the ends):
- *     Drive (the look's dash, below) · Showcase (the car, Spotify or a 12-hour clock, the logo) ·
- *     Warm-up (oil / coolant, the warm-up rev limit) · G-force (peak hold, hold a finger down to
+ *     Showcase (the car, Spotify or a 12-hour clock, the logo) · Drive (the look's dash, below;
+ *     the screen the app opens on) · Warm-up (oil / coolant, the warm-up rev limit) · G-force (peak hold, hold a finger down to
  *     reset) · Tires (TPMS pressure / temperature). hub.js draws all but Drive. A cold start opens
  *     Warm-up and goes back to Drive by itself once warm (a swipe cancels that).
  *   - the drive mode badge: FES.statusFESVehicleDynamicSwitchHMI.actualValueModeDrivingExperience
@@ -52,7 +52,7 @@ const lookOf = (id) => LOOKS.find((l) => l.id === id) || LOOKS[0];
 const MPH = 1.609344;
 const TRAIL_MS = 3000;
 const OIL_READY_F = 194, COOLANT_READY_F = 176, HYST_F = 4;
-const VERSION = '0.5.1';
+const VERSION = '0.5.2';
 // Warm-up: the rev limit is COLD_RPM at or below COLD_F oil, rising (250 rpm steps) to WARM_REDLINE at
 // the "oil temp for full revs" setting. Auto-jump: AUTO_MS after READY it opens Drive.
 const COLD_RPM = 4000, COLD_F = 104, WARM_REDLINE = 6000, OIL_FULL_F = 180, AUTO_MS = 5000;
@@ -97,7 +97,8 @@ mgu.run({
         if (ctx.setTheme) ctx.setTheme(palette);
         settings.onChange((k) => { if (k === 'look' && ctx.setTheme) ctx.setTheme(palette); });
 
-        let peak = null, since = Date.now(), env = [], hist = [], gSeen = false;
+        let peak = null, since = Date.now(), env = [], hist = [], gSeen = false, sessionAt = 0;
+        const SESSION_FLASH_MS = 450;
         const trail = [];
         const reset = () => {
             peak = { rpm: 0, speed: 0, acc: 0, brk: 0, lat: 0, left: 0, right: 0 }; trail.length = 0; since = Date.now();
@@ -141,8 +142,8 @@ mgu.run({
         // 4 = Cluster map; the
         // bar's Reset moves to the settings page (no bar: the page reaches the screen's bottom)
         let page = 0, armed = 0, gDown = 0, downKey = '';
-        let scr = 0;                             // the hub screen (HUB.SCREENS index)
         const SCR = (id) => HUB.SCREENS.findIndex((x) => x[0] === id);
+        let scr = SCR(HUB.HOME);                 // the hub screen (HUB.SCREENS index): Drive, not index 0
         const go = (i) => { scr = i; };
         if (ctx.hideButton) ctx.hideButton('BTN_RESET');
         // the dash again: the settings' Back, the G there, the controller pushed left (ctx.onBack), and
@@ -240,7 +241,11 @@ mgu.run({
                 peak: { acc: peak.acc, brk: peak.brk, lat: peak.lat, rpm: peak.rpm, speed: speedOf(peak.speed) },
                 oil: { f: oil, thr: oilThr, ok: warm('oil', oil, oilThr) },
                 cool: { f: cool, thr: coolThr, ok: warm('coolant', cool, coolThr) },
-                demo: false, session: now - since, panel: settings.get('panel') === 'spotify' ? 'spotify' : 'g',
+                demo: false, session: now - since,
+                // a tap on a look's session clock (L.sessionTap): that clock back to 0:00 (the peaks stay), a flash
+                sessionTap: cv.own ? () => { since = Date.now(); sessionAt = since; log.info('session clock reset (tap)'); } : null,
+                sessionFlash: sessionAt && now - sessionAt < SESSION_FLASH_MS ? 1 - (now - sessionAt) / SESSION_FLASH_MS : 0,
+                panel: settings.get('panel') === 'spotify' ? 'spotify' : 'g',
                 // the drive mode badge: a label only when the car sent a mode we could read (car.js MODE_LABEL)
                 mode: d.driveMode || null, modeTone: L.modeTone(d.driveMode || null),
                 d,
@@ -333,7 +338,7 @@ mgu.run({
             if (!ready) { autoJump.readyAt = 0; return; }
             if (!autoJump.readyAt) autoJump.readyAt = now;
             if (now - autoJump.readyAt >= AUTO_MS) {
-                autoJump = null; go(SCR('drive'));
+                autoJump = null; go(SCR(HUB.HOME));
                 say('Engine warm', 'Switched from Warm-up');
                 log.info('warm: Drive');
             }

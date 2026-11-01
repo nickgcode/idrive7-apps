@@ -15,9 +15,19 @@
  *
  * Endpoints (developer.spotify.com/documentation/web-api): GET /v1/me/player (204 = nothing playing),
  * PUT /v1/me/player/play | pause, POST /v1/me/player/next | previous, PUT /v1/me/player/seek?position_ms=,
- * PUT /v1/me/player/shuffle?state=, PUT /v1/me/player/repeat?state=track|context|off,
+ * PUT /v1/me/player/shuffle?state=, GET /v1/me/player/devices, GET /v1/me/player/recently-played, GET /v1/me/tracks, PUT /v1/me/player/repeat?state=track|context|off,
  * GET /v1/me/library/contains?uris=, PUT /v1/me/library?uris=.
  * Player commands are Premium-only (403 otherwise).
+ * The Play button with nothing playing (start()): resumes what Spotify still has (GET /me/player, paused);
+ * with no player state, the last track from GET /me/player/recently-played?limit=1 in its album / playlist
+ * (PUT /me/player/play { context_uri, offset: { uri } }, else { uris: [track] }); with nothing to resume,
+ * the Liked Songs (GET /me/tracks, paged, LIKED_CAP at most) shuffled here, LIKED_PLAY of them as a
+ * uris list, with shuffle on. No active device: one from GET /me/player/devices (the last one seen
+ * playing, else a phone, else the first) as device_id, which also moves playback there. Scopes:
+ * recently-played needs user-read-recently-played, Liked Songs user-library-read; a sign-in without them
+ * (the token's scope list, or Spotify's 403 on those reads) gives 'SCOPE': sign in again.
+ * The Previous button (back()): as other players, more than RESTART_MS into the track restarts it
+ * (seek to 0); otherwise the track before.
  */
 const https = require('https');
 const dns = require('dns');
@@ -43,6 +53,12 @@ function trustedCa(dir) {
 const ACCOUNTS = 'accounts.spotify.com';
 const API = 'api.spotify.com';
 const MAX_BODY = 4 * 1024 * 1024;
+const RESTART_MS = 3000;            // Previous: past this far into the track, back to its start instead
+const LIKED_CAP = 300;              // start(): Liked Songs read at most (50 per page)
+const LIKED_PLAY = 100;             // ... and played of them, picked at random, as one uris list
+const SCOPE_RECENT = 'user-read-recently-played', SCOPE_LIBRARY = 'user-library-read';
+/** start()'s own refusals, a short line for the screen as their message */
+const START_CODES = ['SCOPE', 'NOPLAYER', 'EMPTY'];
 
 function SpotifyError(message, code, status) {
     const e = new Error(message);
@@ -62,6 +78,7 @@ class Spotify {
         this.retryAt = 0;           // after a 429: no calls before (ms epoch)
         this.dead = null;           // the token endpoint refused this sign-in (SpotifyError)
         this.ca = null;
+        this.lastDevice = '';       // the id of the device last seen in /me/player (start() prefers it)
         this._resolver = null; this._dnsKey = '';
     }
 
@@ -200,16 +217,18 @@ class Spotify {
         if (j.scope) this.scope = j.scope;
     }
 
-    /** A Web API call: resolves { status, json }. Throws SpotifyError for HTTP errors. */
-    async api(method, pathname, query, again) {
+    /** A Web API call: resolves { status, json }; body: an object sent as JSON. Throws SpotifyError for HTTP errors. */
+    async api(method, pathname, query, body, again) {
         if (Date.now() < this.retryAt) throw SpotifyError('rate limited', 'RATE', 429);
         if (!this.token || Date.now() > this.tokenExp - 60000) await this._refresh();
         const qs = query ? '?' + querystring.stringify(query) : '';
         const hasBody = method === 'PUT' || method === 'POST';
-        const r = await this.request(method, API, '/v1' + pathname + qs, { Authorization: 'Bearer ' + this.token }, hasBody ? '' : null);
+        const headers = { Authorization: 'Bearer ' + this.token };
+        if (body != null) headers['Content-Type'] = 'application/json';
+        const r = await this.request(method, API, '/v1' + pathname + qs, headers, body != null ? JSON.stringify(body) : hasBody ? '' : null);
         let j = null;
         if (r.body.length) { try { j = JSON.parse(r.body.toString('utf8')); } catch (e) { /* not JSON */ } }
-        if (r.status === 401 && !again) { this.token = null; return this.api(method, pathname, query, true); }
+        if (r.status === 401 && !again) { this.token = null; return this.api(method, pathname, query, body, true); }
         if (r.status === 429) {
             const s = Math.max(1, Math.min(600, Number(r.headers['retry-after']) || 10));
             this.retryAt = Date.now() + s * 1000;
@@ -226,12 +245,113 @@ class Spotify {
     /** Playback state, or null when nothing is playing (204). */
     async player() {
         const r = await this.api('GET', '/me/player', { additional_types: 'track,episode' });
-        return r.status === 204 || !r.json ? null : r.json;
+        const j = r.status === 204 || !r.json ? null : r.json;
+        if (j && j.device && j.device.id) this.lastDevice = j.device.id;
+        return j;
+    }
+
+    /** The scopes this sign-in has (the token answer's list, else the one saved at sign-in), or null when unknown. */
+    scopes() {
+        const s = this.scope || (this.auth && typeof this.auth.scope === 'string' ? this.auth.scope : '');
+        return s ? s.split(/\s+/).filter(Boolean) : null;
+    }
+    /** Does this sign-in surely lack scope (known list without it)? Unknown: false, the call tells. */
+    lacks(scope) { const s = this.scopes(); return !!s && s.indexOf(scope) < 0; }
+    /** A GET that needs scope: 'SCOPE' when the sign-in lacks it (known, or Spotify's 403). */
+    async _scoped(scope, pathname, query) {
+        if (this.lacks(scope)) throw SpotifyError('Sign in again to enable this', 'SCOPE', 403);
+        try { return await this.api('GET', pathname, query); } catch (e) {
+            if (e.status === 403) throw SpotifyError('Sign in again to enable this', 'SCOPE', 403);
+            throw e;
+        }
+    }
+    async devices() {
+        const r = await this.api('GET', '/me/player/devices');
+        return r.json && Array.isArray(r.json.devices) ? r.json.devices : [];
+    }
+    /** The device to play on when none is active: the last one seen, else a phone (likely the car's), else the first. */
+    static pickDevice(list, lastId) {
+        const ok = (list || []).filter((d) => d && d.id && !d.is_restricted);
+        const act = ok.find((d) => d.is_active);
+        return act || ok.find((d) => lastId && d.id === lastId) || ok.find((d) => /smartphone/i.test(d.type || '')) || ok[0] || null;
+    }
+    static isStartError(e) { return !!e && START_CODES.indexOf(e.code) >= 0; }
+    /**
+     * The Play button with nothing playing (see the top): resume, else the last track played, else the
+     * Liked Songs shuffled. -> { how: 'resume' | 'recent' | 'liked', device, missing: [scope...] }
+     * (missing: what a new sign-in would add, e.g. resume skipped for want of user-read-recently-played).
+     * Throws 'NOPLAYER' (no device at all), 'SCOPE', 'EMPTY' with a message for the screen.
+     */
+    async start() {
+        const st = await this.player();
+        let dev = st && st.device && st.device.id && st.device.is_active ? st.device : null;
+        if (!dev) {
+            dev = Spotify.pickDevice(await this.devices(), (st && st.device && st.device.id) || this.lastDevice);
+            if (!dev) throw SpotifyError('Open Spotify on your phone', 'NOPLAYER', 404);
+        }
+        const q = dev.is_active ? undefined : { device_id: dev.id };
+        const out = { how: '', device: dev.name || '', missing: [] };
+        // 1. Spotify still has it (paused): just play
+        if (st && (st.item || st.context)) {
+            await this.api('PUT', '/me/player/play', q, {});
+            out.how = 'resume'; return out;
+        }
+        // 2. the last track played, in its album / playlist when it was played from one
+        let last = null;
+        try {
+            const r = await this._scoped(SCOPE_RECENT, '/me/player/recently-played', { limit: 1 });
+            last = r.json && Array.isArray(r.json.items) && r.json.items[0];
+        } catch (e) {
+            if (e.code !== 'SCOPE') throw e;
+            out.missing.push(SCOPE_RECENT);
+        }
+        const tr = last && last.track && last.track.uri;
+        if (tr) {
+            const ctx = last.context && last.context.uri;
+            if (ctx && /^spotify:(album|playlist):/.test(ctx)) {
+                try { await this.api('PUT', '/me/player/play', q, { context_uri: ctx, offset: { uri: tr } }); out.how = 'recent'; return out; } catch (e) {
+                    // gone, or the track no longer in it: the track alone
+                    if (e.code === 'RATE' || e.status === 401 || e.status === 403 || !(e.status >= 400)) throw e;
+                    this.log.warn('spotify: last context: ' + e.message + ', the track alone');
+                }
+            }
+            await this.api('PUT', '/me/player/play', q, { uris: [tr] });
+            out.how = 'recent'; return out;
+        }
+        // 3. the Liked Songs, shuffled
+        let uris = [];
+        try {
+            for (let off = 0; off < LIKED_CAP; off += 50) {
+                const r = await this._scoped(SCOPE_LIBRARY, '/me/tracks', { limit: 50, offset: off });
+                const items = (r.json && Array.isArray(r.json.items)) ? r.json.items : [];
+                items.forEach((it) => { const t = it && it.track; if (t && t.uri && !t.is_local && /^spotify:track:/.test(t.uri)) uris.push(t.uri); });
+                if (items.length < 50 || !(r.json && r.json.next)) break;
+            }
+        } catch (e) {
+            if (e.code !== 'SCOPE') throw e;
+            out.missing.push(SCOPE_LIBRARY);
+            throw SpotifyError('Sign in again to enable this', 'SCOPE', 403);
+        }
+        if (!uris.length) throw SpotifyError(out.missing.length ? 'Sign in again to enable this' : 'Nothing to resume and no Liked Songs', out.missing.length ? 'SCOPE' : 'EMPTY', 404);
+        for (let i = uris.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const x = uris[i]; uris[i] = uris[j]; uris[j] = x; }
+        uris = uris.slice(0, LIKED_PLAY);
+        await this.api('PUT', '/me/player/play', q, { uris: uris });
+        // shuffle on for the device now playing (a refusal here is not worth an error: the list is shuffled already)
+        try { await this.api('PUT', '/me/player/shuffle', { state: 'true', device_id: dev.id }); } catch (e) { this.log.warn('spotify: shuffle on: ' + e.message); }
+        out.how = 'liked'; return out;
     }
     play() { return this.api('PUT', '/me/player/play'); }
     pause() { return this.api('PUT', '/me/player/pause'); }
     next() { return this.api('POST', '/me/player/next'); }
     previous() { return this.api('POST', '/me/player/previous'); }
+    /** Is the Previous button a restart at positionMs (the known / interpolated position)? */
+    static restarts(positionMs) { return positionMs > RESTART_MS; }
+    /** The Previous button: the track's start when past RESTART_MS (seek 0), else the track before. -> 'restart' | 'previous' */
+    async back(positionMs) {
+        if (Spotify.restarts(positionMs)) { await this.seek(0); return 'restart'; }
+        await this.previous();
+        return 'previous';
+    }
     seek(ms) { return this.api('PUT', '/me/player/seek', { position_ms: Math.max(0, Math.round(ms)) }); }
     shuffle(on) { return this.api('PUT', '/me/player/shuffle', { state: on ? 'true' : 'false' }); }
     /** state: 'track' | 'context' | 'off' (PUT /v1/me/player/repeat?state=) */
@@ -253,4 +373,4 @@ class Spotify {
     }
 }
 
-module.exports = { Spotify };
+module.exports = { Spotify, RESTART_MS, LIKED_CAP, LIKED_PLAY, SCOPE_RECENT, SCOPE_LIBRARY };

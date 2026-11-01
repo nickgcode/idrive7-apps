@@ -145,6 +145,7 @@ module.exports = {
         cell(cv, rx, top, rw, 128, 'SESSION');
         cv.text('TOP ' + (isNum(S.peak.speed) ? Math.round(S.peak.speed) : 0), rx + rw - 14, top + 26, 17, Y, { align: 'right', font: TXT, spacing: 1.5, literal: true });
         cv.text(L.clock(S.session), rx + rw - 18, top + 108, 70, Y, { align: 'right', font: NUM, literal: true });
+        L.sessionTap(cv, S, rx, top, rw, 128, Y);          // a tap on the cell: the clock back to 0
         const gy = top + 128 + gap, gh = 104 + Math.round(ex * 0.2);
         cell(cv, rx, gy, rw, gh, 'G');
         // a small friction circle in the cell

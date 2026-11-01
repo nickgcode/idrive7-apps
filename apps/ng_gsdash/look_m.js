@@ -94,15 +94,20 @@ function temp(cv, t, x, y, w, label, v) {
     for (let i = 0; i < n; i++) L.slant(cv, x + i * (sw + gap), y, sw, 14, K, isNum(v.f) && (i + 0.5) / n <= f ? c : t.track);
 }
 
-/** The drive mode as a slanted tag, bottom-left at (x, y): filled red / blue for SPORT+ / SPORT. */
-function modeTag(cv, t, x, y, S) {
+/**
+ * The drive mode as a slanted tag with the tricolour stripes in front: filled red / blue for SPORT+ /
+ * SPORT. The whole group (stripes and tag) is centred on cx, its bottom at y; h: its height.
+ */
+function modeTag(cv, t, cx, y, h, S) {
     if (!S.mode) return;
-    const h = 30, fill = { 'sport+': RD, track: RD, sport: DB }[S.modeTone];
-    const tw = cv.textWidth(S.mode, 20, { font: NUM, spacing: 2, literal: true }), w = tw + 40;
+    const size = h >= 30 ? 20 : 17, fill = { 'sport+': RD, track: RD, sport: DB }[S.modeTone];
+    const tw = cv.textWidth(S.mode, size, { font: NUM, spacing: 2, literal: true }), w = tw + 40;
+    // the stripes start 34 px left of the tag; the tag's slant reaches K * h right of its bottom
+    const x = Math.round(cx - (w + K * h - 34) / 2);
     if (fill) L.slant(cv, x, y - h, w, h, K, fill);
     else { L.slant(cv, x, y - h, w, h, K, '#2c313a'); L.slant(cv, x + 2, y - h + 2, w - 4, h - 4, K, '#0b0c0f'); }
     tricolour(cv, x - 34, y - h, h, 6, 3);
-    cv.text(S.mode, x + 20 + K * h / 2, y - 7, 20, fill ? '#ffffff' : t.text, { font: NUM, spacing: 2, literal: true });
+    cv.text(S.mode, x + 20 + K * h / 2, y - Math.round(h * 0.23), size, fill ? '#ffffff' : t.text, { font: NUM, spacing: 2, literal: true });
 }
 
 module.exports = {
@@ -163,18 +168,25 @@ module.exports = {
         // speed: the hero
         const sx = x0 + 700;
         cv.text(isNum(S.speed) ? String(Math.round(S.speed)) : '--', sx, y0 + 300 + m, 172 + ex * 0.4, t.text, { align: 'center', font: NUM, literal: true });
-        cv.text(S.unit, sx, y0 + 346 + m, 18, t.dim, { align: 'center', font: TXT, spacing: 8, literal: true });
+        const unitY = y0 + 346 + m;
+        cv.text(S.unit, sx, unitY, 18, t.dim, { align: 'center', font: TXT, spacing: 8, literal: true });
         cv.text(L.rpmText(S.rpm) + '  RPM', sx, y0 + 156 + ex * 0.15, 22, t.dim, { align: 'center', font: LT, spacing: 3, literal: true });
 
         // peaks, then the g-meter (or the Spotify panel there)
         if (S.panel !== 'spotify') this.gPart(cv, S, t, x0, y0, ex, m);
 
-        // bottom: warm-up
-        const by = S.y + S.h - 28;
-        cv.fillRect(x0 + 40, by - 44, 720, 1, '#1e2128');
-        temp(cv, t, x0 + 40, by, 330, 'OIL', S.oil);
-        temp(cv, t, x0 + 410, by, 330, 'COOLANT', S.cool);
-        modeTag(cv, t, x0 + 836, by + 14, S);   // right of the warm-up bars, left of the g total
+        // bottom: warm-up. The two bars spread evenly (outer margins = the gap between them) across the
+        // space left of the right panel (Spotify or the peaks / g-meter), x0 + 1000, inset 40 px each side
+        const by = S.y + S.h - 28, line = by - 44;
+        const tw = 330, wl = x0 + 40, wr = x0 + 1000 - 40, tg = Math.round((wr - wl - 2 * tw) / 3);
+        const ox = wl + tg, cx2 = ox + tw + tg;
+        cv.fillRect(ox, line, cx2 + tw - ox, 1, '#1e2128');
+        temp(cv, t, ox, by, tw, 'OIL', S.oil);
+        temp(cv, t, cx2, by, tw, 'COOLANT', S.cool);
+        // the drive mode: under the speed's unit, centred on the speed, midway between it and the warm-up
+        // rule (clear of the Spotify panel, which starts at x0 + 1000); smaller where that gap is tight
+        const th = line - unitY >= 56 ? 30 : 24;
+        modeTag(cv, t, sx, Math.round((unitY + line + th) / 2), th, S);
     },
     gPart(cv, S, t, x0, y0, ex, m) {
         const px = x0 + 1190, gcx = x0 + 1384, gcy = y0 + 250 + m * 0.7, gr = 118 + ex * 0.2;

@@ -25,7 +25,7 @@ const querystring = require('querystring');
 const URL = require('url').URL;      // WHATWG URL (Node 7+)
 
 const SCOPES = ['user-read-playback-state', 'user-modify-playback-state', 'user-read-currently-playing',
-    'user-library-read', 'user-library-modify'];
+    'user-library-read', 'user-library-modify', 'user-read-recently-played'];
 const AAD = Buffer.from('ng_spotify/1');
 const LIFETIME = 10 * 60 * 1000;          // a QR code is good for 10 minutes, then a new one is made
 const POLL_MS = 4000;                     // ntfy.sh's anonymous limit refills one request per 5 s after a burst of 60

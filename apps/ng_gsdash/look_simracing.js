@@ -192,6 +192,7 @@ module.exports = {
         const bh = 64 + Math.round(ex * 0.08), bgap = 10, bw = (lw - bgap) / 2, by0 = bottom - 2 * bh - bgap;
         block(cv, lx, by0, bw, bh, 'TOP', isNum(S.peak.speed) && S.peak.speed > 0 ? String(Math.round(S.peak.speed)) : '--', null);
         block(cv, lx + bw + bgap, by0, bw, bh, 'SESSION', L.clock(S.session), null);
+        L.sessionTap(cv, S, lx + bw + bgap, by0, bw, bh, YEL);     // a tap on the block: the clock back to 0
         tempBlock(cv, lx, by0 + bh + bgap, bw, bh, 'OIL', S.oil);
         tempBlock(cv, lx + bw + bgap, by0 + bh + bgap, bw, bh, 'WATER', S.cool);
 

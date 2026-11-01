@@ -209,18 +209,36 @@ class Music {
         if (this.status !== 'ok' && this.status !== 'idle') { this.say(this.status === 'noauth' ? 'Not signed in to Spotify' : this.status === 'offline' ? 'No internet (phone / Wi-Fi uplink)' : 'Spotify: ' + (this.detail || this.status)); return; }
         try { await fn(); if (this.pb && local) local(); } catch (e) {
             this.log.warn(what + ': ' + (e.code || '') + ' ' + e.message);
-            if (e.status === 403) this.say('Spotify Premium is needed for ' + what);
+            if (Spotify.isStartError(e)) this.say(e.code === 'SCOPE' ? e.message + ' (Spotify settings: Sign in with phone)' : e.message, 5000);
+            else if (e.status === 403) this.say('Spotify Premium is needed for ' + what);
             else if (e.status === 404) this.say('No active Spotify device: start playing on your phone');
             else if (e.code === 'RATE') this.say('Spotify: too many requests, try again in a moment');
             else this.say(what + ' failed: ' + e.message);
         }
         this.nextPoll = Date.now() + 600;
     }
+    /** Pause, or play: spotify.js start() resumes, else the last track, else the Liked Songs shuffled, on a device it finds. */
     togglePlay() {
         const pb = this.pb, playing = !!(pb && pb.playing);
-        return this.run(playing ? 'pause' : 'play', () => (playing ? this.sp.pause() : this.sp.play()), () => { pb.progress = this.position(); pb.at = Date.now(); pb.playing = !playing; });
+        if (playing) return this.run('pause', () => this.sp.pause(), () => { pb.progress = this.position(); pb.at = Date.now(); pb.playing = false; });
+        return this.run('play', async () => { this.started(await this.sp.start()); }, () => { if (this.pb === pb) { pb.at = Date.now(); pb.playing = true; } });
     }
-    skip(dir) { return this.run(dir > 0 ? 'next' : 'previous', () => (dir > 0 ? this.sp.next() : this.sp.previous()), () => { this.pb.progress = 0; this.pb.at = Date.now(); }); }
+    /** What Play started, as a toast when it was more than a resume on the same device. */
+    started(r) {
+        if (!r) return;
+        const on = r.device ? ' on ' + r.device : '';
+        const again = r.missing && r.missing.length ? '. Sign in again to resume your last track' : '';
+        if (r.how === 'liked') this.say('Shuffling your Liked Songs' + on + again, 5000);
+        else if (r.how === 'recent') this.say('Playing your last track' + on);
+        this.log.info('play: ' + r.how + (r.device ? ' (' + r.device + ')' : '') + (r.missing && r.missing.length ? ', scope missing: ' + r.missing.join(' ') : ''));
+    }
+    /** Next, or Previous as other players: past 3 s into the track back to its start (the bar at 0 at once), else the track before (spotify.js back). */
+    skip(dir) {
+        if (dir > 0) return this.run('next', () => this.sp.next(), () => { this.pb.progress = 0; this.pb.at = Date.now(); });
+        const at = this.position();
+        if (this.pb && Spotify.restarts(at) && (this.status === 'ok' || this.status === 'idle')) { this.pb.progress = 0; this.pb.at = Date.now(); }
+        return this.run('previous', () => this.sp.back(at), () => { this.pb.progress = 0; this.pb.at = Date.now(); });
+    }
     seekTo(ms) {
         const pb = this.pb;
         if (!pb || !pb.duration) return;

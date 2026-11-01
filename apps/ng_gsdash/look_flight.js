@@ -145,6 +145,8 @@ function fma(cv, S, x, y, w) {
         if (c[2] && S.blink) cv.strokeRoundRect(cx + 30, y + 3, cw - 60, h - 6, 0, 2, WHT);
         cv.text(c[0], cx + cw / 2, y + h / 2 + 8, 22, c[1], { align: 'center', font: TXT, spacing: 1, literal: true });
     });
+    // a tap on the T+ cell (down to just above the tapes, a bigger target): the clock back to 0
+    L.sessionTap(cv, S, x + 3 * cw + 2, y, cw - 2, h + 18, CYN);
 }
 
 module.exports = {

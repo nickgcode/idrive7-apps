@@ -10,7 +10,9 @@ const L = require('./lib');
 const G = require('./kit/gauges');
 const { withAlpha, isNum } = L;
 
-const SCREENS = [['drive', 'Drive'], ['showcase', 'Showcase'], ['warmup', 'Warm-up'], ['gforce', 'G-force'], ['tires', 'Tires']];
+// left to right as the swipe goes; the app opens on HOME (Drive), second: Showcase is a swipe right of it
+const SCREENS = [['showcase', 'Showcase'], ['drive', 'Drive'], ['warmup', 'Warm-up'], ['gforce', 'G-force'], ['tires', 'Tires']];
+const HOME = 'drive';
 const GREEN = '#2fd27a';
 
 /* ---------- look adapter ---------- */
@@ -383,4 +385,4 @@ function showcase(cv, st, S, music, lk, gr, img, now) {
     return mid;
 }
 
-module.exports = { SCREENS, GREEN, style, dots, dotsBox, toast, pill, warmup, gforce, tires, showcase, clock12 };
+module.exports = { SCREENS, HOME, GREEN, style, dots, dotsBox, toast, pill, warmup, gforce, tires, showcase, clock12 };
