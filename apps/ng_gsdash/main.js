@@ -13,7 +13,7 @@
  *     from rpm / speed when the car sends none), rpm, speed, a live g-meter with session peaks
  *     (accel / brake / lateral), oil and coolant warm-up state; always mph and degrees F (green = ready)
  *   - looks (setting "look", look_*.js): each its own layout, type, gauges and tab style -
- *     Simple (the original), M Style, GT, Heritage, Flight, Digital '84, Sim Racing
+ *     Simple (the original), M Style, GT, Heritage, Flight, Digital '84, Sim Racing, Lumen, Pixel (0.7.0)
  *   - setting "panel": Spotify instead of the g-meter (music.js, G's Music's code shared in by the
  *     build): what plays, art, previous / play-pause / next, a bar to tap or drag; its own QR sign-in
  *   - a hidden diagnostics page (tap "G's Dash <version>" in the Options header 5 times): the drive
@@ -46,15 +46,17 @@ const L = require('./lib');
 const Music = require('./music').Music;
 const DIAG = require('./diag');
 const ClusterMap = require('./cluster').ClusterMap;
+const Fuel = require('./fuel');
 
 const LOOKS = [require('./look_simple'), require('./look_m'), require('./look_gt'),
-    require('./look_heritage'), require('./look_flight'), require('./look_digital'), require('./look_simracing')];
+    require('./look_heritage'), require('./look_flight'), require('./look_digital'), require('./look_simracing'),
+    require('./look_lumen'), require('./look_pixel')];
 const lookOf = (id) => LOOKS.find((l) => l.id === id) || LOOKS[0];
 
 const MPH = 1.609344;
 const TRAIL_MS = 3000;
 const OIL_READY_F = 194, COOLANT_READY_F = 176, HYST_F = 4;
-const VERSION = '0.6.0';
+const VERSION = '0.7.0';
 // Warm-up: the rev limit is COLD_RPM at or below COLD_F oil, rising (250 rpm steps) to WARM_REDLINE at
 // the "oil temp for full revs" setting. Auto-jump: AUTO_MS after READY it opens Drive.
 const COLD_RPM = 4000, COLD_F = 104, WARM_REDLINE = 6000, OIL_FULL_F = 180, AUTO_MS = 5000;
@@ -91,6 +93,9 @@ mgu.run({
         // car data only: no demo feed (opts.demo false), a value not sent shows '--'
         const car = new Car(ctx, ['rpm', 'speed', 'temps', 'accel', 'gear', 'drivemode', 'tpms', 'units'], { demo: false });
         L.loadFonts(log);
+        // the fuel level and range (fuel.js): only for the Drive page's 'Bottom bars: Fuel' choice
+        const fuel = new Fuel();
+        fuel.watch(ctx, log);
 
         const look = () => lookOf(settings.get('look'));
         const palette = () => { const l = look(); return typeof l.palette === 'function' ? l.palette(settings) : l.palette; };
@@ -248,6 +253,8 @@ mgu.run({
                 sessionTap: cv.own ? () => { since = Date.now(); sessionAt = since; log.info('session clock reset (tap)'); } : null,
                 sessionFlash: sessionAt && now - sessionAt < SESSION_FLASH_MS ? 1 - (now - sessionAt) / SESSION_FLASH_MS : 0,
                 panel: settings.get('panel') === 'spotify' ? 'spotify' : 'g',
+                // the Drive page's bottom bars: oil & coolant, or the fuel level (Warm-up always shows oil & coolant)
+                bars: settings.get('bars') === 'fuel' ? 'fuel' : 'temps', fuel: fuel.state(),
                 // the drive mode badge: a label only when the car sent a mode we could read (car.js MODE_LABEL)
                 mode: d.driveMode || null, modeTone: L.modeTone(d.driveMode || null),
                 d,
@@ -380,7 +387,7 @@ mgu.run({
         /* ---------- Options (the G) and Theme ---------- */
         // the look gallery's card size: the same on Options (the current look) and Theme (all), so each
         // card is drawn once (cardImage)
-        const TILE_W = 263, TILE_H = 190, ROW_H = 64, ROW_GAP = 19;
+        const TILE_W = 208, TILE_H = 190, ROW_H = 64, ROW_GAP = 19;
         const valueText = (u, s2) => (u.upper ? s2.toUpperCase() : s2);
         /** A chevron (>) at (x, y), size k. */
         const chevron = (cv, x, y, k, c) => { cv.line(x - k / 2, y - k, x + k / 2, y, 2.5, c); cv.line(x + k / 2, y, x - k / 2, y + k, 2.5, c); };
@@ -487,7 +494,7 @@ mgu.run({
         function themePage(cv, S, lk) {
             const t = S.t, u = lk.ui, lbl = lblOf(cv, u), card = cardOf(lk), acc = t.sel || t.accent, cur = lk.id;
             header(cv, S, lk, lbl, card, 'Theme', 1);
-            const x0 = S.x, top = S.y + 34, cols = 4, g = 16;
+            const x0 = S.x, top = S.y + 34, cols = 5, g = 14;
             lbl('Look', x0, S.y + 20, 18, t.dim);
             LOOKS.forEach((l, i) => {
                 const cx = x0 + (i % cols) * (TILE_W + g), cy = top + Math.floor(i / cols) * (TILE_H + g), on = l.id === cur;
@@ -506,7 +513,7 @@ mgu.run({
                 cv.target(cx, cy, TILE_W, TILE_H, () => { settings.set('look', l.id); }, 'look:' + l.id, 10);
             });
             // the right panel: two choices, the current one lit
-            const px = x0 + cols * TILE_W + (cols - 1) * g + 40, pw = S.x + S.w - px, ph = 132;
+            const px = x0 + cols * TILE_W + (cols - 1) * g + 40, pw = S.x + S.w - px, ph = 112;
             lbl('Right panel on Drive', px, S.y + 20, 18, t.dim);
             [['g', 'G-meter', 'Live g-meter and session peaks'], ['spotify', 'Spotify', 'What plays, with touch controls']].forEach((o, i) => {
                 const oy = top + i * (ph + g), on = (panelOn() ? 'spotify' : 'g') === o[0];
@@ -519,9 +526,18 @@ mgu.run({
                 cv.text(fitText(cv, o[2], 18, pw - 124), px + 104, oy + 92, 18, t.dim, { literal: true });
                 cv.target(px, oy, pw, ph, () => settings.set('panel', o[0]), 'panel:' + o[0], u.radius);
             });
-            const ny = top + 2 * ph + g + 34;
+            const ny = top + 2 * ph + g + 30;
             ['Spotify also shows on the G-force page.', 'Showcase always shows Spotify.'].forEach((l2, k) => {
-                if (ny + k * 28 < S.y + S.h) cv.text(fitText(cv, l2, 18, pw), px, ny + k * 28, 18, t.dim, { literal: true });
+                if (ny + k * 26 < S.y + S.h) cv.text(fitText(cv, l2, 18, pw), px, ny + k * 26, 18, t.dim, { literal: true });
+            });
+            // the Drive page's bottom bars: oil & coolant, or the fuel level (Warm-up keeps oil & coolant)
+            const by = ny + 82, bh = 60, bw = (pw - g) / 2, cur2 = settings.get('bars') === 'fuel' ? 'fuel' : 'temps';
+            lbl('Bottom bars on Drive', px, by - 18, 18, t.dim);
+            [['temps', 'Oil & coolant'], ['fuel', 'Fuel']].forEach((o, i) => {
+                const bx = px + i * (bw + g), on = cur2 === o[0];
+                if (on) { cv.roundRect(bx, by, bw, bh, u.radius, L.withAlpha(acc, 0.22)); cv.strokeRoundRect(bx, by, bw, bh, u.radius, 3, acc); } else card(cv, t, bx, by, bw, bh, false);
+                lbl(o[1], bx + bw / 2, by + bh / 2 + 8, u.size, on ? t.text : t.dim, { align: 'center' });
+                cv.target(bx, by, bw, bh, () => settings.set('bars', o[0]), 'bars:' + o[0], u.radius);
             });
         }
 

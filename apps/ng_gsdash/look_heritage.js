@@ -64,6 +64,28 @@ function lamp(cv, x, y, label, v) {
     cv.text(isNum(v.f) ? Math.round(v.f) + '°F' : '--', x + 24, y + 19, 19, CREAM, { font: NUM, literal: true });
 }
 
+/** The fuel level (Bottom bars: Fuel): a tell-tale (amber at the car's low level), then an E-F strip with an orange pointer. */
+function fuelGauge(cv, x, x1, y, F) {
+    const ft = L.fuelText(F);
+    const on = ft.has && ft.low;
+    cv.circle(x, y, 13, '#000000');
+    cv.circle(x, y, 11, on ? '#ffae1a' : '#1a1916');
+    if (on) cv.circle(x - 3, y - 3, 3.5, withAlpha('#ffffff', 0.5));
+    cv.text('FUEL', x + 24, y - 1, 15, DIMC, { font: TXT, spacing: 2.5, literal: true });
+    cv.text(ft.value, x + 24, y + 19, 19, CREAM, { font: NUM, literal: true });
+    const bx = x + 110, bw = x1 - bx - (ft.range ? 110 : 0), cy = y + 2;
+    cv.fillRect(bx, cy - 1, bw, 2, withAlpha(CREAM, 0.5));
+    for (let k = 0; k <= 4; k++) cv.fillRect(bx + bw * k / 4 - 1, cy - (k % 2 ? 5 : 9), 2, k % 2 ? 10 : 18, k === 0 ? RED : withAlpha(CREAM, 0.8));
+    cv.text('E', bx - 14, cy + 6, 15, RED, { align: 'center', font: TXT, literal: true });
+    cv.text('F', bx + bw + 14, cy + 6, 15, CREAM, { align: 'center', font: TXT, literal: true });
+    if (ft.f !== null) { const px = bx + bw * ft.f; cv.quad([[px - 6, cy + 12], [px + 6, cy + 12], [px + 1.5, cy - 12], [px - 1.5, cy - 12]], NEEDLE); }
+    if (ft.range) {
+        // the number in the numerals, the unit in the label type (the numerals have no letters)
+        cv.text('MI', x1, cy + 6, 14, DIMC, { align: 'right', font: TXT, spacing: 2, literal: true });
+        cv.text(ft.range.replace(' MI', ''), x1 - cv.textWidth('MI', 14, { font: TXT, spacing: 2, literal: true }) - 8, cy + 7, 19, CREAM, { align: 'right', font: NUM, literal: true });
+    }
+}
+
 module.exports = {
     id: 'heritage',
     name: 'Heritage',
@@ -146,8 +168,11 @@ module.exports = {
         if (S.panel !== 'spotify') this.accel(cv, S, A);
 
         // warm-up tell-tales between the dials, the badge in the corner
-        lamp(cv, x0 + 522 - ex * 0.3, S.y + S.h - 34, 'OIL', S.oil);
-        lamp(cv, x0 + 980 + ex * 0.3, S.y + S.h - 34, 'WATER', S.cool);
+        if (S.bars === 'fuel') fuelGauge(cv, x0 + 522 - ex * 0.3, x0 + 1060 + ex * 0.3, S.y + S.h - 34, S.fuel);
+        else {
+            lamp(cv, x0 + 522 - ex * 0.3, S.y + S.h - 34, 'OIL', S.oil);
+            lamp(cv, x0 + 980 + ex * 0.3, S.y + S.h - 34, 'WATER', S.cool);
+        }
     },
     accel(cv, S, A) {
         cv.blit(G.layer(['gs-h-g', A.r, S.gMax].join('|'), 2 * A.r + 40, 2 * A.r + 40, (c) => {

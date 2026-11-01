@@ -130,13 +130,39 @@ function eicas(cv, cx, cy, r, v, lo, hi, label) {
     cv.text(label, cx, cy + r * 0.62, 18, CYN, { align: 'center', font: TXT, spacing: 1, literal: true });
 }
 
+/** The fuel level as an EICAS dial (Bottom bars: Fuel): 0-100 %, amber below the low mark, the box amber when low. */
+function eicasFuel(cv, cx, cy, r, F) {
+    const ft = L.fuelText(F), a0 = -120, a1 = 90, a = a0 + (ft.f || 0) * (a1 - a0), at = a0 + 0.15 * (a1 - a0);
+    if (ft.f !== null) cv.arc(cx, cy, 0, r - 4, a0, a, withAlpha(ft.low ? AMB : WHT, 0.16));
+    cv.arc(cx, cy, r - 3, r, a0, at, AMB);
+    cv.arc(cx, cy, r - 3, r, at, a1, WHT);
+    if (ft.f !== null) { const p = L.pt(cx, cy, r - 6, a); cv.line(cx, cy, p[0], p[1], 3, WHT); }
+    const col = !ft.has ? GRY : ft.low ? AMB : GRN;
+    cv.fillRect(cx + 6, cy - r + 6, 92, 40, '#000000');
+    cv.strokeRoundRect(cx + 6, cy - r + 6, 92, 40, 0, 2, ft.low && ft.has ? AMB : withAlpha(WHT, 0.9));
+    cv.text(ft.f !== null ? String(Math.round(ft.f * 100)) : '--', cx + 90, cy - r + 38, 30, col, { align: 'right', font: NUM, literal: true });
+    cv.text('FUEL %', cx, cy + r * 0.62, 18, CYN, { align: 'center', font: TXT, spacing: 1, literal: true });
+}
+/** The range as a boxed readout beside the fuel dial. */
+function rangeBox(cv, cx, cy, r, F) {
+    const ft = L.fuelText(F), v = ft.range ? ft.range.replace(' MI', '') : '--';
+    cv.fillRect(cx - 70, cy - 34, 140, 52, '#000000');
+    cv.strokeRoundRect(cx - 70, cy - 34, 140, 52, 0, 2, withAlpha(WHT, 0.9));
+    cv.text(v, cx + 60, cy + 8, 36, ft.range ? GRN : GRY, { align: 'right', font: NUM, literal: true });
+    cv.text('RANGE MI', cx, cy + r * 0.62, 18, CYN, { align: 'center', font: TXT, spacing: 1, literal: true });
+    if (ft.low && ft.has) cv.text('FUEL LOW', cx, cy - 48, 18, AMB, { align: 'center', font: TXT, spacing: 1, literal: true });
+}
+
 function fma(cv, S, x, y, w) {
     const cols = 4, cw = w / cols, h = 40;
     const oil = S.oil.ok === false, h2o = S.cool.ok === false;
+    const ft = S.bars === 'fuel' ? L.fuelText(S.fuel) : null;
     const cells = [
         S.strobe ? ['SHIFT', AMB, true] : ['GEAR ' + S.gearText, GRN],
-        oil ? ['OIL COLD', AMB] : ['OIL ' + (S.oil.ok ? 'NORM' : '--'), S.oil.ok ? GRN : GRY],
-        h2o ? ['H2O COLD', AMB] : ['H2O ' + (S.cool.ok ? 'NORM' : '--'), S.cool.ok ? GRN : GRY],
+        ft ? (ft.low && ft.has ? ['FUEL LOW', AMB] : ['FUEL ' + ft.value, ft.has ? GRN : GRY])
+            : oil ? ['OIL COLD', AMB] : ['OIL ' + (S.oil.ok ? 'NORM' : '--'), S.oil.ok ? GRN : GRY],
+        ft ? ['RNG ' + (ft.range || '--'), ft.range ? GRN : GRY]
+            : h2o ? ['H2O COLD', AMB] : ['H2O ' + (S.cool.ok ? 'NORM' : '--'), S.cool.ok ? GRN : GRY],
         ['T+' + L.clock(S.session).slice(0, -2), CYN],
     ];
     cells.forEach((c, i) => {
@@ -209,8 +235,11 @@ module.exports = {
         cv.strokeRoundRect(ex + 50, y0 + 84 + k * 0.2, 140, 150 + k * 0.2, 0, 2, withAlpha(WHT, 0.9));
         cv.text(S.gearText, ex + 120, y0 + 202 + k * 0.3, 110 + k * 0.2, S.strobe && S.blink ? AMB : GRN, { align: 'center', font: NUM, literal: true });
         if (S.guessed) cv.text('EST', ex + 120, y0 + 258 + k * 0.4, 16, GRY, { align: 'center', font: TXT, literal: true });
-        eicas(cv, ex + 345, y0 + 162, 86, S.oil, 100, 280, 'OIL T °F');
-        eicas(cv, ex + 560, y0 + 162, 86, S.cool, 100, 260, 'H2O T °F');
+        if (S.bars === 'fuel') { eicasFuel(cv, ex + 345, y0 + 162, 86, S.fuel); rangeBox(cv, ex + 560, y0 + 162, 86, S.fuel); }
+        else {
+            eicas(cv, ex + 345, y0 + 162, 86, S.oil, 100, 280, 'OIL T °F');
+            eicas(cv, ex + 560, y0 + 162, 86, S.cool, 100, 260, 'H2O T °F');
+        }
         cv.fillRect(ex + 40, y0 + 278, 630, 2, '#2a2f36');
         const row = (y, items) => items.forEach((it, i) => {
             const x = ex + 50 + i * 215;

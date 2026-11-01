@@ -27,6 +27,22 @@ function chip(cv, t, x, y, label, f, state, measure) {
     return w;
 }
 
+/** The fuel level as one chip (the Bottom bars: Fuel choice): dot, FUEL, a small bar, %, range. Centred on cx. */
+function fuelChip(cv, t, cx, y, F) {
+    const ft = L.fuelText(F), color = !ft.has ? t.dim : ft.low ? NOT_READY : READY, bw = 120, h = 30;
+    const lw = cv.textWidth('FUEL', 16, { font: 'bold', spacing: 1.5 }), vw = cv.textWidth(ft.value, 22, { font: 'num', literal: true });
+    const rw = ft.range ? cv.textWidth(ft.range, 16, { font: 'bold', spacing: 1, literal: true }) + 14 : 0;
+    const w = 32 + lw + 12 + bw + 12 + vw + rw + 14, x = Math.round(cx - w / 2);
+    cv.roundRect(x, y, w, h, 15, withAlpha(color, ft.has ? 0.14 : 0.08));
+    cv.circle(x + 18, y + h / 2, 6, color);
+    cv.text('FUEL', x + 32, y + 21, 16, t.dim, { font: 'bold', spacing: 1.5 });
+    const bx = x + 32 + lw + 12;
+    cv.roundRect(bx, y + 11, bw, 8, 4, withAlpha('#ffffff', 0.12));
+    if (ft.f) cv.roundRect(bx, y + 11, Math.max(8, bw * ft.f), 8, 4, color);
+    cv.text(ft.value, bx + bw + 12, y + 23, 22, ft.has ? t.text : t.dim, { font: 'num', literal: true });
+    if (ft.range) cv.text(ft.range, bx + bw + 12 + vw + 14, y + 21, 16, t.dim, { font: 'bold', spacing: 1, literal: true });
+}
+
 const DIAL_X = 330, CHIP_GAP = 12;
 const FILL_YELLOW = '#ffc21a';   // the shift lights' own yellow (G.shiftLights): the gear while they fill
 
@@ -87,10 +103,13 @@ module.exports = {
             cv.text(p[1].toFixed(2), 1576, y + 34, 30, t.accent2 || t.text, { align: 'right', font: 'num', literal: true });
         });
         const cy = S.y + S.h - 32;
-        const w1 = chip(cv, t, 0, 0, 'OIL', S.oil.f, S.oil.ok, true), w2 = chip(cv, t, 0, 0, 'COOLANT', S.cool.f, S.cool.ok, true);
-        const cx0 = Math.round(DIAL_X - (w1 + CHIP_GAP + w2) / 2);
-        chip(cv, t, cx0, cy, 'OIL', S.oil.f, S.oil.ok);
-        chip(cv, t, cx0 + w1 + CHIP_GAP, cy, 'COOLANT', S.cool.f, S.cool.ok);
+        if (S.bars === 'fuel') fuelChip(cv, t, DIAL_X, cy, S.fuel);
+        else {
+            const w1 = chip(cv, t, 0, 0, 'OIL', S.oil.f, S.oil.ok, true), w2 = chip(cv, t, 0, 0, 'COOLANT', S.cool.f, S.cool.ok, true);
+            const cx0 = Math.round(DIAL_X - (w1 + CHIP_GAP + w2) / 2);
+            chip(cv, t, cx0, cy, 'OIL', S.oil.f, S.oil.ok);
+            chip(cv, t, cx0 + w1 + CHIP_GAP, cy, 'COOLANT', S.cool.f, S.cool.ok);
+        }
         modeChip(cv, t, 800, cy, S);            // in the chips' row, under the gear
     },
 };

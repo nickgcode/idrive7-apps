@@ -1,8 +1,8 @@
 {
   "id": "ng_gsdash",
   "title": "G's Dash",
-  "description": "Driver display and car hub in seven looks (Simple, M Style, GT, Heritage, Flight, Digital '84, Sim Racing). Swipe between Showcase (the car, Spotify or a clock), Drive (opens first; shift lights, gear, rpm, speed, g-meter, drive mode badge, oil / coolant in °F), Warm-up (warm-up rev limit), G-force (peak hold) and Tires (TPMS). Optional Spotify panel (art, previous / play-pause / next, seek; own QR sign-in, Spotify Premium and mgu-uplink internet). Optional Cluster map setting: CarPlay's map on the instrument cluster through the separately installed Waze on cluster tool (off unless installed and turned on)",
-  "version": "0.6.0",
+  "description": "Driver display and car hub in nine looks (Simple, M Style, GT, Heritage, Flight, Digital '84, Sim Racing, Lumen, Pixel). Swipe between Showcase (the car, Spotify or a clock), Drive (opens first; shift lights, gear, rpm, speed, g-meter, drive mode badge, oil / coolant in °F or the fuel level), Warm-up (warm-up rev limit), G-force (peak hold) and Tires (TPMS). Optional Spotify panel (art, previous / play-pause / next, seek; own QR sign-in, Spotify Premium and mgu-uplink internet). Optional Cluster map setting: CarPlay's map on the instrument cluster through the separately installed Waze on cluster tool (off unless installed and turned on)",
+  "version": "0.7.0",
   "vendor": "ng",
   "loggingId": "OAN1",
   "iconGlyph": "gauge",
@@ -38,6 +38,18 @@
     "de.bmw.infotainment.vehicle.Vehicle": {
       "_optional": "the car's display units (air pressure, temperature) for the TPMS values",
       "statusNewCurrentUnitsStatusExt": "rs"
+    },
+    "de.bmw.infotainment.lsc.LSCDataSink": {
+      "_optional": "the fuel bar's level: fuelSupply.relativeFuelLevelEstimate (UInt16, read as %; as 0.1 % once a value above 100 arrives; raw values logged)",
+      "fuelSupply": "s"
+    },
+    "de.bmw.infotainment.KombiIF": {
+      "_optional": "the fuel bar's range and reserve: statusRangeTankStatus.range (km), .statusFluidLevelFuelTankSpare (AKTIV = reserve), .fluidLevelFuelTank (litres, only without a %); no other member is read",
+      "statusRangeTankStatus": "rs"
+    },
+    "de.bmw.powertrain.Range": {
+      "_optional": "the fuel bar's range and low-fuel warning: dataRangeDisplay.dataRangeDisplayTotal in .unitRangeDisplay, .rangeWarningFuelLevel (GERING = low)",
+      "dataRangeDisplay": "s"
     }
   },
   "screens": [
@@ -74,7 +86,7 @@
   },
   "settings": [
     {"key": "look", "label": "Look", "type": "choice", "default": "simple",
-     "options": [["simple", "Simple"], ["m", "M Style"], ["gt", "GT"], ["heritage", "Heritage"], ["flight", "Flight"], ["digital", "Digital '84"], ["simracing", "Sim Racing"]]},
+     "options": [["simple", "Simple"], ["m", "M Style"], ["gt", "GT"], ["heritage", "Heritage"], ["flight", "Flight"], ["digital", "Digital '84"], ["simracing", "Sim Racing"], ["lumen", "Lumen"], ["pixel", "Pixel"]]},
     {"key": "redline", "label": "Redline", "type": "number", "unit": "rpm", "default": 6500,
      "steps": [5500, 6000, 6500, 7000, 7500]},
     {"key": "shiftBefore", "label": "Shift point before redline", "type": "number", "unit": "rpm", "default": 300,
@@ -87,7 +99,9 @@
      "steps": [160, 165, 170, 175, 180, 185, 190, 194, 200]},
     {"key": "gScale", "label": "G-meter size", "type": "number", "unit": "g", "default": 1.5, "steps": [1.0, 1.5, 2.0]},
     {"key": "panel", "label": "Right panel", "type": "choice", "default": "g",
-     "options": [["g", "G-meter and peaks"], ["spotify", "Spotify (touch controls)"]]}
+     "options": [["g", "G-meter and peaks"], ["spotify", "Spotify (touch controls)"]]},
+    {"key": "bars", "label": "Bottom bars", "type": "choice", "default": "temps",
+     "options": [["temps", "Oil & coolant"], ["fuel", "Fuel"]]}
   ],
   "retiredSettings": ["demo", "layout", "renderer", "speedUnit", "spotifyPoll", "showBadge", "lights", "theme"]
 }

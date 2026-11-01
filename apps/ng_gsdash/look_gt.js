@@ -112,7 +112,16 @@ module.exports = {
         cv.text(S.unit, cx[0] + cw[0] - 14, top + 26, 17, '#9a9a9a', { align: 'right', font: TXT, spacing: 1.5, literal: true });
         cv.text(isNum(S.speed) ? String(Math.round(S.speed)) : '---', cx[0] + cw[0] - 22, top + sh - 18, 132 + ex * 0.3, '#ffffff', { align: 'right', font: NUM, literal: true });
         const hw = (cw[0] - gap) / 2, ty = top + sh + gap, th = H - sh - gap;
-        [['OIL °F', S.oil], ['WATER °F', S.cool]].forEach((p, i) => {
+        if (S.bars === 'fuel') {
+            // one cell: FUEL %, the level as a bar along its foot (solid red at the car's low level), range
+            const ft = L.fuelText(S.fuel), low = ft.low && ft.has, w = cw[0];
+            cell(cv, cx[0], ty, w, th, 'FUEL', low ? '#ff2020' : null);
+            cv.text(ft.value, cx[0] + w - 16, ty + th - 26, 62, ft.has ? '#ffffff' : '#8a8a8a', { align: 'right', font: NUM, literal: true });
+            if (ft.range) cv.text(ft.range, cx[0] + 14, ty + th - 30, 22, low ? '#000000' : '#9a9a9a', { font: TXT, spacing: 1.5, literal: true });
+            const bx = cx[0] + 14, bw = w - 28, by = ty + th - 14;
+            cv.fillRect(bx, by, bw, 6, low ? withAlpha('#000000', 0.35) : '#1f1f1f');
+            if (ft.f) cv.fillRect(bx, by, bw * ft.f, 6, low ? '#ffffff' : Y);
+        } else [['OIL °F', S.oil], ['WATER °F', S.cool]].forEach((p, i) => {
             const v = p[1], cold = v.ok === false, x = cx[0] + i * (hw + gap);
             cell(cv, x, ty, hw, th, p[0], cold ? COLD : null);
             cv.text(isNum(v.f) ? String(Math.round(v.f)) : '--', x + hw - 16, ty + th - 18, 62, cold ? '#ffffff' : v.ok ? '#ffffff' : '#8a8a8a', { align: 'right', font: NUM, literal: true });

@@ -23,8 +23,9 @@ function style(lk, t0) {
         t, u, up,
         txt: (cv, s, x, y, size, c, o) => cv.text(up(s), x, y, size, c, Object.assign({ font: u.lbl || u.txt, spacing: u.upper ? u.spacing : 0, literal: true }, o || {})),
         txtW: (cv, s, size, o) => cv.textWidth(up(s), size, Object.assign({ font: u.lbl || u.txt, spacing: u.upper ? u.spacing : 0, literal: true }, o || {})),
-        num: (cv, s, x, y, size, c, o) => cv.text(String(s), x, y, size, c, Object.assign({ font: u.num, literal: true }, o || {})),
-        numW: (cv, s, size) => cv.textWidth(String(s), size, { font: u.num, literal: true }),
+        // a look may draw its own numbers (Pixel: big ones as rects): ui.numText / ui.numWidth
+        num: (cv, s, x, y, size, c, o) => (u.numText ? u.numText(cv, String(s), x, y, size, c, o) : cv.text(String(s), x, y, size, c, Object.assign({ font: u.num, literal: true }, o || {}))),
+        numW: (cv, s, size) => (u.numWidth ? u.numWidth(cv, String(s), size) : cv.textWidth(String(s), size, { font: u.num, literal: true })),
         plate: (cv, x, y, w, h, accent) => {
             if (lk.panelPlate) { lk.panelPlate(cv, t, x, y, w, h); return; }
             cv.roundRect(x, y, w, h, u.radius, withAlpha('#ffffff', 0.035));
