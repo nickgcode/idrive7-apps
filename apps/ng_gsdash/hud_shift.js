@@ -85,6 +85,7 @@ class HudShift {
         this.cur = null;                                    // { id, style, labels, assets, ref, anim, sent }
         this.visible = false; this.lastRearm = -1e15;
         this.others = []; this.busyAt = -1e15; this.layerErr = ''; this.lastErr = ''; this.errCount = 0; this.refused = ''; this.noEffect = false;
+        this.asked = 0; this.answered = 0; this.healed = false;   // 0.8.5: as the skins (cluster_skin.js)
         this.hudState = ''; this.hudHolder = ''; this.hudReason = ''; this.layerState = ''; this.poll = null; this.pump = null; this.downAt = this.now();
     }
 
@@ -109,6 +110,7 @@ class HudShift {
         if (!this.cr || !this.ready || !this.polled) return;
         if (!this.visible) { if (this.cur) this._apply(); return; }
         if (this._why()) { this._apply(); return; }
+        if (!this.cur || !this.cur.ok) return;
         if (this.now() - this.lastPush >= PUSH_MS) this._uniforms(false);
     }
     lookId() { const s = this.st || {}; return LOOKS.indexOf(s.look) >= 0 ? s.look : 'simple'; }
@@ -125,23 +127,27 @@ class HudShift {
         this.err = null;
         const cr = this.cr = new c.ClusterRender(this.app, c.sock);
         this.stats.connects++;
-        cr.on('ready', () => { if (this.cr !== cr) return; this.ready = true; this.log.info('hud shift: connected'); this._ask(); });
+        cr.on('ready', () => {
+            if (this.cr !== cr) return;
+            this.ready = true; this.asked = 0; this.answered = 0;
+            this.log.info('hud shift: connected');
+            this._ask();
+            if (this.cur) this._unconfirm(this.cur);       // 0.8.5: the client's replay, confirmed by this ask
+        });
         cr.on('disconnected', () => {
             if (this.cr !== cr) return;
             this.ready = false; this.polled = false; this.downAt = this.now();
+            this.asked = 0; this.answered = 0;
+            if (this.cur) { try { cr.set(this.cur.ref, { visible: false }); } catch (e) { /* gone */ } this.cur.ok = false; }
+            this.visible = false;
             this.log.info('hud shift: disconnected');
         });
         cr.on('layer', (ref, state, reason) => {
-            if (this.cr !== cr || !this.cur || ref !== this.cur.ref) return;
+            if (this.cr !== cr || !this.cur || !this.cur.ok || ref !== this.cur.ref) return;
             this.layerState = state || '';
             if (state === 'error') { this.layerErr = reason || 'error'; this.lastErr = 'layer: ' + (reason || 'error'); this.log.warn('hud shift: layer error' + (reason ? ' (' + reason + ')' : '')); this._hide('layer error'); }
         });
-        cr.on('refused', (op, ref, reason) => {
-            if (this.cr !== cr) return;
-            this.refused = (op || '?') + ': ' + (reason || '?');
-            this.log.warn('hud shift: refused ' + this.refused);
-            if (this.cur && (ref === this.cur.ref || this.cur.assets.indexOf(ref) >= 0)) { this.layerErr = this.refused; this.lastErr = this.refused; this._hide('refused'); }
-        });
+        cr.on('refused', (op, ref, reason) => this._refused(cr, op, ref, reason));
         cr.on('target', (name, state, holder, reason) => {
             if (this.cr !== cr || name !== TARGET) return;
             if (state !== this.hudState || (holder || '') !== this.hudHolder) this.log.info('hud shift: hud ' + state + (holder ? ' holder ' + holder : '') + (reason ? ' (' + reason + ')' : ''));
@@ -156,6 +162,8 @@ class HudShift {
             if (was !== is) this.log.info('hud shift: hud ' + (is ? 'in use by ' + is : 'free of other apps'));
             this.others = others;
             this.polled = true;
+            this.answered++;
+            if (this.cur && !this.cur.ok && this.answered >= this.cur.until) this._confirm();
             this._apply();
         });
         this.downAt = this.now();
@@ -163,7 +171,44 @@ class HudShift {
         this.pump = this.T.setInterval(() => this._pump(), PUMP_MS);
         try { cr.connect(); } catch (e) { this.log.warn('hud shift: connect ' + e.message); }
     }
-    _ask() { if (this.cr && this.ready) { try { this.cr.status(); } catch (e) { /* next poll */ } } }
+    _ask() { if (this.cr && this.ready) { try { this.cr.status(); this.asked++; } catch (e) { /* next poll */ } } }
+    /**
+     * 0.8.5 (as cluster_skin.js): unconfirmed, the first refusal is kept and reported (not the "no such
+     * layer" echoes after it); confirmed, a "no such layer" / "no such asset" is a lost layer, made again
+     * once, then reported. A refused drop is only noted.
+     */
+    _refused(cr, op, ref, reason) {
+        if (this.cr !== cr) return;
+        const r = (op || '?') + ': ' + (reason || '?'), c = this.cur;
+        this.refused = r;
+        const ours = !!(c && ref && (ref === c.ref || c.assets.indexOf(ref) >= 0));
+        if (op === 'drop' || !ours) { this.log.info('hud shift: refused ' + r + (op === 'drop' ? '' : ' (not in use)')); return; }
+        this.log.warn('hud shift: refused ' + r);
+        if (!c.ok) { if (!c.err) c.err = r; return; }
+        const lost = /^no such (layer|asset)$/.test(String(reason || ''));
+        if (lost && !this.healed) {
+            this.healed = true;
+            this.log.warn('hud shift: the renderer lost the layer (' + r + '): made again');
+            this._dropLook(); this._apply();
+            return;
+        }
+        if (lost) this.errCount = ERR_RETRIES;              // lost again: reported until Refresh cluster
+        this.layerErr = r; this.lastErr = r;
+        this._hide('refused'); this._dropLook();
+    }
+    _unconfirm(c) { c.ok = false; c.err = ''; c.until = this.asked; }
+    _confirm() {
+        const c = this.cur, cr = this.cr;
+        if (c.err) {
+            this.layerErr = c.err; this.lastErr = c.err;
+            this.log.warn('hud shift: ' + c.id + ' refused (' + c.err + ')');
+            this._dropLook();
+            return;
+        }
+        c.ok = true;
+        if (!c.bound) { cr.bind(c.ref, 'u_hud', c.a); cr.bind(c.ref, 'u_gear', c.g); cr.uniform(c.ref, 'u_fresh', [0]); c.bound = true; }
+        this.log.info('hud shift: ' + c.id + ' confirmed by the renderer');
+    }
     _tick() {
         if (!this.want || !this.cr) return;
         if (!this.ready) {
@@ -192,6 +237,7 @@ class HudShift {
         if (this.others.length) return 'hud in use';
         if (now - this.busyAt < HOLD_MS) return 'hud in use';
         if (this.layerErr || this.noEffect) return 'renderer error';
+        if (this.cur && !this.cur.ok && this.cur.id === this.lookId()) return 'making';
         return '';
     }
     _apply() {
@@ -205,6 +251,7 @@ class HudShift {
             try { ok = this._make(id); } catch (e) { this.log.warn('hud shift: ' + (e.stack || e)); this.layerErr = 'make: ' + e.message; }
             if (!ok) { this._hide('assets'); return; }
         }
+        if (!this.cur.ok) { this.why = 'making'; return; }   // 0.8.5: nothing to it before the service confirms it
         if (!this.visible) {
             this._uniforms(true);
             this._rearm();
@@ -214,7 +261,7 @@ class HudShift {
         }
     }
     _hide(why) {
-        if (!this.visible || !this.cur || !this.cr) { this.visible = false; return; }
+        if (!this.visible || !this.cur || !this.cur.ok || !this.cr) { this.visible = false; return; }
         try { this.cr.set(this.cur.ref, { visible: false }); } catch (e) { /* gone */ }
         this.visible = false;
         this.log.info('hud shift: hidden (' + why + ')');
@@ -223,6 +270,7 @@ class HudShift {
         if (!this.want || !this.cr || !this.ready) return;
         if (this._why()) { if (this.visible) this._apply(); return; }
         if (!this.visible) { if (this.cur) this._apply(); if (!this.visible) return; }
+        if (!this.cur || !this.cur.ok) return;
         if (this.now() - this.lastPush >= PUSH_MS - 2) this._uniforms(false);
         if (this.now() - this.lastRearm >= REARM_MS) this._rearm();
     }
@@ -271,11 +319,12 @@ class HudShift {
             x: B.x, y: B.y, w: B.w, h: B.h, fs: HC.fragment(style, cells) });
         if (!ref) { this.log.warn('hud shift: effect layer refused by the client'); this._dropAll(cur); return false; }
         cur.ref = ref;
-        cr.bind(ref, 'u_hud', a); cr.bind(ref, 'u_gear', g);
-        cr.uniform(ref, 'u_fresh', [0]);
+        // 0.8.5: bound and its uniforms sent once the service confirms it (0.8.4 sent them at once)
+        cur.a = a; cur.g = g; cur.bound = false;
         this.stats.layers++;
         this.cur = cur; this.visible = false;
         if (old) this._dropAll(old);
+        this._ask(); this._unconfirm(cur);
         this.log.info('hud shift: ' + id + ' (' + style + ') made (' + Math.round(this.stats.bytes / 1024) + ' KB sent this run)');
         return true;
     }
@@ -341,7 +390,7 @@ class HudShift {
             return { kind: 'wait', text: 'Asking for the HUD' };
         }
         const TXT = { 'stale values': 'Hidden - signal delayed', 'no rpm signal': 'Hidden - no rpm signal', 'demo data': 'Hidden - demo data',
-            'hud in use': 'Waiting - HUD in use', 'renderer error': 'Renderer refused the lights', assets: 'Lights failed to load',
+            'hud in use': 'Waiting - HUD in use', 'renderer error': 'Renderer refused the lights', assets: 'Lights failed to load', making: 'Making the lights',
             'no shift point': 'Hidden - set the redline', 'no update': 'Hidden' };
         if (why === 'renderer error' && !this.noEffect && this.lastErr) return { kind: 'error', text: 'Refused: ' + String(this.lastErr).replace(/^[a-z?]+: /, '') };
         return { kind: why === 'renderer error' || why === 'assets' ? 'error' : 'wait', text: TXT[why] || 'Hidden' };

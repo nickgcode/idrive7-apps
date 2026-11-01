@@ -123,7 +123,7 @@ function cutsOf(side) {
 /**
  * The car's values -> the side's uniforms, for the look's meta (skin_looks.js). st: { speed (mph, as
  * shown), rpm, gear ('P', 'R', 'N', 'D', '1'..'9', or '-' / null: unknown) }.
- * -> { u_m, u_nm, u_gl, u_cut }: 4 numbers each. u_gl: left, the speed's ones, tens, hundreds digit
+ * -> { u_fill, u_nm, u_gl, u_cut }: 4 numbers each. u_gl: left, the speed's ones, tens, hundreds digit
  * (-1: no digit there); right, the gear's cell.
  */
 function uniforms(meta, side, st) {
@@ -133,7 +133,7 @@ function uniforms(meta, side, st) {
         return isNum(v) ? clamp(v, RANGE[k][0], RANGE[k][1]) : null;
     };
     const NONE = [1, 0, 0, 0];                         // lo > hi: no fill
-    [['u_m', 'u_nm', S.main, 0]].forEach((g) => {
+    [['u_fill', 'u_nm', S.main, 0]].forEach((g) => {
         const k = g[2], f = meta.fill[k], v = val(k);
         let fill = NONE;
         if (f && f.kind === 'sweep' && v !== null) {
@@ -212,7 +212,7 @@ function fragment(meta, side) {
         'uniform sampler2D u_band;',
         'uniform sampler2D u_glyph;',
         'uniform float u_fresh;',
-        'uniform vec4 u_m;',
+        'uniform vec4 u_fill;',
         'uniform vec4 u_nm;',
         'uniform vec4 u_gl;',
         'uniform vec4 u_cut;',
@@ -253,7 +253,7 @@ function fragment(meta, side) {
         '    vec3 c = art.rgb;',
         '    if (code >= 128.0) {',
         // each gauge class may sample on its own grid (the Pixel look: 4 px blocks)
-        fillCall('u_m', MAIN_ROWS, fm, q(fm), trail(fm), head(fm), 1),
+        fillCall('u_fill', MAIN_ROWS, fm, q(fm), trail(fm), head(fm), 1),
         '    }',
         needleGlsl(nm, 'u_nm', 'u_nm.z != 0.0 || u_nm.w != 0.0'),
         glyphGlsl(cells),
@@ -296,6 +296,18 @@ function fillCall(U, rows, f, q, tr, hd, g) {
     ].join('\n');
 }
 
+/**
+ * 0.8.5: the uniforms the Cluster renderer (0.2.2, PROTOCOL.md "Shaders") fills itself, reserved in every
+ * shader and only as mat4: a shader declaring one otherwise does not compile there ("effect did not
+ * compile": the layer is never made, and everything sent to it after is "no such layer"). 0.8.0-0.8.4's
+ * skins named their fill "u_m" (the model matrix's name): refused on the car in every look.
+ */
+const RESERVED = ['u_mvp', 'u_mv', 'u_m', 'u_v', 'u_p', 'u_normal'];
+/** the reserved names a shader uses (whole identifiers): [] when none */
+function reservedUses(src) {
+    const s = String(src || '');
+    return RESERVED.filter((n) => new RegExp('(^|[^A-Za-z0-9_])' + n + '(?![A-Za-z0-9_])').test(s));
+}
 const FIELD_K = 2;                                        // 0.8.4: the field's texels are 2x2 pixels (skin_assets.js)
 module.exports = { FIELD_K, GEOM, PANEL_W, PANEL_H, REGION_W, REGION_H, SIDES, BAND_W, BAND_ROWS, MAIN_ROWS, SMALL_ROW, SMALL_ROWS, ALT_ROW,
-    SMALL_CODE, S_SCALE, CUTS, CUT_PAD, RANGE, ACC_AREA, CENTRE, SMALL_BOX, MAIN_ZONE, SPEED_COVER, GEAR_COVER, SPEED_MAX, LEN, MAJ, at, sOf, dirAt, local, cutsOf, uniforms, fragment, clamp, isNum };
+    SMALL_CODE, S_SCALE, CUTS, CUT_PAD, RANGE, ACC_AREA, CENTRE, SMALL_BOX, MAIN_ZONE, SPEED_COVER, GEAR_COVER, SPEED_MAX, LEN, MAJ, at, sOf, dirAt, local, cutsOf, uniforms, fragment, clamp, isNum, RESERVED, reservedUses };

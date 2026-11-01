@@ -130,6 +130,8 @@ class ClusterSkin {
         this.cur = null;                          // { id, assets: [...], L: { ref, anim, sent }, R }
         this.visible = false; this.lastRearm = -1e15; this.lastPump = -1e15;
         this.others = []; this.busyAt = -1e15; this.layerErr = ''; this.lastErr = ''; this.errCount = 0; this.refused = ''; this.noEffect = false;
+        this.asked = 0; this.answered = 0;            // 0.8.5: status asks and answers, this connection
+        this.healed = false;                          // 0.8.5: a lost layer made again once already
         this.poll = null; this.pump = null; this.downAt = this.now();
     }
 
@@ -164,6 +166,7 @@ class ClusterSkin {
         // hidden: shown again only if the layers are made (making them is update()'s, at the loop's pace)
         if (!this.visible) { if (this.cur) this._apply(); return; }
         if (this._why()) { this._apply(); return; }
+        if (!this.cur || !this.cur.ok) return;
         if (this.now() - this.lastPush >= PUSH_MS) this._uniforms(false);
     }
     lookId() {
@@ -185,27 +188,36 @@ class ClusterSkin {
         this.err = null;
         const cr = this.cr = new c.ClusterRender(this.app, c.sock);
         this.stats.connects++;
-        cr.on('ready', () => { if (this.cr !== cr) return; this.ready = true; this.log.info('cluster skin: connected'); this._ask(); });
+        cr.on('ready', () => {
+            if (this.cr !== cr) return;
+            this.ready = true; this.asked = 0; this.answered = 0;
+            this.log.info('cluster skin: connected');
+            this._ask();
+            // 0.8.5: the client replayed our layers on connecting (before this): in use again only once the
+            // service's answer to this ask says none of them was refused
+            if (this.cur) this._unconfirm(this.cur);
+        });
         cr.on('disconnected', () => {
             if (this.cr !== cr) return;
             // the service removes a closed client's layers; the dead-man fades ours meanwhile. Made again
             // whole on the next connection (the client's own reconnect, or ours after RECONNECT_MS).
             this.ready = false; this.polled = false; this.downAt = this.now();
+            this.asked = 0; this.answered = 0;
+            // 0.8.5: hidden in the client's copy (the replay makes them hidden); nothing in use until confirmed
+            if (this.cur) {
+                ['L', 'R'].forEach((s) => { if (this.cur[s]) { try { cr.set(this.cur[s].ref, { visible: false }); } catch (e) { /* gone */ } } });
+                this.cur.ok = false;
+            }
+            this.visible = false;
             this.log.info('cluster skin: disconnected');
         });
         cr.on('layer', (ref, state, reason) => {
-            if (this.cr !== cr || !this.cur) return;
+            if (this.cr !== cr || !this.cur || !this.cur.ok) return;
             if ((this.cur.L && ref === this.cur.L.ref) || (this.cur.R && ref === this.cur.R.ref)) {
                 if (state === 'error') { this.layerErr = reason || 'error'; this.lastErr = 'layer: ' + (reason || 'error'); this.log.warn('cluster skin: layer error' + (reason ? ' (' + reason + ')' : '')); this._hide('layer error'); }
             }
         });
-        cr.on('refused', (op, ref, reason) => {
-            if (this.cr !== cr) return;
-            this.refused = (op || '?') + ': ' + (reason || '?');
-            this.log.warn('cluster skin: refused ' + this.refused);
-            // one of ours refused (a shader that did not compile, an asset over a limit): stock, retried
-            if (this.cur && (ref === (this.cur.L && this.cur.L.ref) || ref === (this.cur.R && this.cur.R.ref) || this.cur.assets.indexOf(ref) >= 0)) { this.layerErr = this.refused; this.lastErr = this.refused; this._hide('refused'); }
-        });
+        cr.on('refused', (op, ref, reason) => this._refused(cr, op, ref, reason));
         cr.on('status', (text) => {
             if (this.cr !== cr) return;
             const now = this.now();
@@ -215,6 +227,9 @@ class ClusterSkin {
             if (was !== is) this.log.info('cluster skin: panel ' + (is ? 'in use by ' + is : 'free of other apps'));
             this.others = others;
             this.polled = true;
+            this.answered++;
+            // 0.8.5: the service answers in order: every refusal of what was sent before the ask came first
+            if (this.cur && !this.cur.ok && this.answered >= this.cur.until) this._confirm();
             this._apply();
         });
         this.downAt = this.now();
@@ -222,7 +237,69 @@ class ClusterSkin {
         this.pump = this.T.setInterval(() => this._pump(), PUMP_MS);
         try { cr.connect(); } catch (e) { this.log.warn('cluster skin: connect ' + e.message); }
     }
-    _ask() { if (this.cr && this.ready) { try { this.cr.status(); } catch (e) { /* next poll */ } } }
+    _ask() { if (this.cr && this.ready) { try { this.cr.status(); this.asked++; } catch (e) { /* next poll */ } } }
+    /** ours: one of the look's layers or assets, or the field's */
+    _ours(ref) {
+        const c = this.cur;
+        if (!ref) return false;
+        if (c && ((c.L && ref === c.L.ref) || (c.R && ref === c.R.ref) || c.assets.indexOf(ref) >= 0)) return true;
+        return !!(this.field && (ref === this.field.L || ref === this.field.R));
+    }
+    /**
+     * 0.8.5: the service refused an op. While the look is not confirmed: the first refusal is kept (the
+     * root: "layer: effect did not compile"; what follows it, "no such layer", is only its echo) and the
+     * confirmation drops and reports it. Once confirmed, a "no such layer" / "no such asset" is a layer
+     * lost under us: made again once, then reported. A refused drop is only noted (the ref is gone).
+     */
+    _refused(cr, op, ref, reason) {
+        if (this.cr !== cr) return;
+        const r = (op || '?') + ': ' + (reason || '?');
+        this.refused = r;
+        if (op === 'drop' || !this._ours(ref)) { this.log.info('cluster skin: refused ' + r + (op === 'drop' ? '' : ' (not in use)')); return; }
+        this.log.warn('cluster skin: refused ' + r);
+        const c = this.cur;
+        if (c && !c.ok) { if (!c.err) c.err = r; return; }
+        if (/^no such (layer|asset)$/.test(String(reason || ''))) {
+            if (!this.healed) {
+                this.healed = true;
+                this.log.warn('cluster skin: the renderer lost a layer (' + r + '): made again');
+                this._dropLook(); this._dropField();
+                this._apply();
+                return;
+            }
+        }
+        // stock, retried by the poll (ERR_RETRIES); a layer lost again after its one remake: reported, kept
+        // stock until Options > Refresh cluster
+        if (this.healed && /^no such (layer|asset)$/.test(String(reason || ''))) this.errCount = ERR_RETRIES;
+        this.layerErr = r; this.lastErr = r;
+        this._hide('refused');
+        this._dropLook(); this._dropField();
+    }
+    /** made (or replayed): not in use until the service's answer to this ask */
+    _unconfirm(c) { c.ok = false; c.err = ''; c.until = this.asked; }
+    /** the answer came: refused (the first reason, dropped, retried) or in use (bound, then shown) */
+    _confirm() {
+        const c = this.cur, cr = this.cr;
+        if (c.err) {
+            this.layerErr = c.err; this.lastErr = c.err;
+            this.log.warn('cluster skin: ' + c.id + ' refused (' + c.err + ')');
+            this._dropLook(); this._dropField();
+            return;
+        }
+        c.ok = true;
+        ['L', 'R'].forEach((s) => {
+            const L = c[s];
+            if (L.bound) return;                         // a replay: the client sent the binds again
+            cr.bind(L.ref, 'u_field', this.field[s]); cr.bind(L.ref, 'u_art', L.art); cr.bind(L.ref, 'u_band', L.band); cr.bind(L.ref, 'u_glyph', L.glyph);
+            cr.uniform(L.ref, 'u_fresh', [0]);
+            L.bound = true;
+        });
+        this.log.info('cluster skin: ' + c.id + ' confirmed by the renderer');
+    }
+    _dropField() {
+        if (this.field && this.cr) { ['L', 'R'].forEach((s) => { try { this.cr.drop(this.field[s]); this.stats.drops++; } catch (e) { /* gone */ } }); }
+        this.field = null;
+    }
     _tick() {
         if (!this.want || !this.cr) return;
         if (!this.ready) {
@@ -252,6 +329,7 @@ class ClusterSkin {
         if (this.others.length) return 'panel in use';
         if (now - this.busyAt < HOLD_MS) return 'panel in use';
         if (this.layerErr || this.noEffect) return 'renderer error';
+        if (this.cur && !this.cur.ok && this.cur.id === this.lookId()) return 'making';
         return '';
     }
     _apply() {
@@ -265,6 +343,7 @@ class ClusterSkin {
             try { ok = this._make(id); } catch (e) { this.log.warn('cluster skin: ' + (e.stack || e)); this.layerErr = 'make: ' + e.message; }
             if (!ok) { this._hide('assets'); return; }
         }
+        if (!this.cur.ok) { this.why = 'making'; return; }   // 0.8.5: nothing to it before the service confirms it
         if (!this.visible) {
             this._uniforms(true);
             this._rearm(true);
@@ -274,7 +353,7 @@ class ClusterSkin {
         }
     }
     _hide(why) {
-        if (!this.visible || !this.cur || !this.cr) { this.visible = false; return; }
+        if (!this.visible || !this.cur || !this.cur.ok || !this.cr) { this.visible = false; return; }
         ['L', 'R'].forEach((s) => { try { this.cr.set(this.cur[s].ref, { visible: false }); } catch (e) { /* gone */ } });
         this.visible = false;
         this.log.info('cluster skin: hidden (' + why + ')');
@@ -284,6 +363,7 @@ class ClusterSkin {
         if (!this.want || !this.cr || !this.ready) return;
         if (this._why()) { if (this.visible) this._apply(); return; }
         if (!this.visible) { if (this.cur) this._apply(); if (!this.visible) return; }
+        if (!this.cur || !this.cur.ok) return;
         if (this.now() - this.lastPush >= PUSH_MS - 2) this._uniforms(false);
         if (this.now() - this.lastRearm >= REARM_MS) this._rearm(false);
     }
@@ -345,12 +425,13 @@ class ClusterSkin {
             const ref = cr.effect({ target: TARGET, klass: KLASS, z: SKIN_Z, exclusive: false, contend: false, visible: false,
                 x: S.x, y: S.y, w: S.w, h: S.h, fs: SK.fragment(meta, s) });
             if (!ref) { this.log.warn('cluster skin: effect layer refused by the client'); this._dropAll(cur); return false; }
-            cur[s] = { ref, anim: 0, sent: {} };
-            cr.bind(ref, 'u_field', this.field[s]); cr.bind(ref, 'u_art', art); cr.bind(ref, 'u_band', band); cr.bind(ref, 'u_glyph', glyph);
-            cr.uniform(ref, 'u_fresh', [0]);
+            // 0.8.5: bound (and its uniforms sent) only once the service confirms the layer and its assets:
+            // 0.8.4 sent them at once, to a layer the service had refused ("no such layer")
+            cur[s] = { ref, anim: 0, sent: {}, art, band, glyph, bound: false };
             this.stats.layers++;
         }
         this.cur = cur; this.visible = false;
+        this._ask(); this._unconfirm(cur);
         this.log.info('cluster skin: ' + id + ' made (' + Math.round(this.stats.bytes / 1024) + ' KB sent this run)');
         return true;
     }
@@ -391,7 +472,7 @@ class ClusterSkin {
         if (this.pump) this.T.clearInterval(this.pump);
         if (cr) {
             this._dropLook();
-            if (this.field) { ['L', 'R'].forEach((s) => { try { cr.drop(this.field[s]); this.stats.drops++; } catch (e) { /* gone */ } }); }
+            this._dropField();
             try { cr.close(); } catch (e) { /* gone */ }
             this.log.info('cluster skin: off');
         }
@@ -414,7 +495,7 @@ class ClusterSkin {
         }
         const TXT = { moving: 'Stock while driving', 'stale values': 'Stock - signal delayed', 'in gear': 'Stock while in gear',
             'no speed signal': 'Stock - no speed signal', 'demo data': 'Stock - demo data', 'panel in use': 'Waiting - panel in use',
-            'renderer error': 'Renderer refused the skin', assets: 'Skin failed to load', 'no update': 'Stock' };
+            'renderer error': 'Renderer refused the skin', assets: 'Skin failed to load', 'no update': 'Stock', making: 'Making the skin' };
         if (why === 'renderer error' && !this.noEffect && this.lastErr) return { kind: 'error', text: 'Refused: ' + shortReason(this.lastErr) };
         return { kind: why === 'renderer error' || why === 'assets' ? 'error' : 'wait', text: TXT[why] || 'Stock' };
     }
