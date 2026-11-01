@@ -1,8 +1,28 @@
 'use strict';
 /**
  * cluster_logo.js - G's Dash's logo in the instrument cluster's central map area while G's Dash is open
- * and nothing else uses that area ("Logo in cluster when map is empty"), through the separately
- * installed "Cluster renderer" tool (cluster-render, robertnisipeanu/idrive-apps, from the Store).
+ * and no route guidance runs ("Logo in cluster when not navigating"), through the separately installed
+ * "Cluster renderer" tool (cluster-render, robertnisipeanu/idrive-apps, from the Store).
+ *
+ * Two modes (0.7.4), by what the car tells:
+ *   - "not navigating" (the car's navigation status answered: NavigationStatus.guidingState, and
+ *     CarPlay's / Android Auto's projectedGuidanceActive, fed in by main.js through guidance()): the
+ *     logo is a "content" layer at z NAV_Z (50): over a free-drive map (Waze on cluster's CarPlay map,
+ *     content z 0) and contending, so it takes the slot over from the stock map (the service's own
+ *     take-over: the HMI's map parks behind it and is back when the logo goes); under G's TV (content
+ *     z 100, exclusive: a video played in the cluster on purpose always wins, and the logo is hidden
+ *     while G's TV draws). Route guidance active (stock navigation ACTIVE, or the phone's guidance) for
+ *     GUIDE_ON_MS: the logo is hidden (visible 0: Waze's map under it shows at once, and the slot goes
+ *     back to the stock map); guidance off for GUIDE_OFF_MS: back. Without CarPlay's signal, a Waze
+ *     layer that is drawing still hides it (its guidance cannot be told).
+ *   - fallback (no navigation status from the car): the 0.7.3 behaviour below: the bottom of the stack,
+ *     hidden while another app's layer is drawing.
+ * The renderer cannot tell what is visible on the glass: a layer "shown" there is drawn into the
+ * cluster's scene, but its picture can be blank (Waze on cluster sends CarPlay's empty picture while
+ * the phone shows no map: its layer is "shown", the area looks empty), and an opaque video covers
+ * anything under it. So "not navigating" covers it instead of guessing.
+ *
+ * The fallback (0.7.3):
  * Written for G's Dash from the tool's PROTOCOL.md and README, the way G's TV talks to it; it contains
  * none of the tool's code. The tool's own Node client is loaded at run time from where the tool
  * installs it, and only when that file and its directory are owned by root and writable by nobody
@@ -83,7 +103,9 @@ const LOGO_W = 448, LOGO_H = 240, BADGE_H = 184;     // the regular logo, 1:1
 const CELL = 16;                                     // the pixel emblem's cell on the cluster
 const FPS_STILL = 1, FPS_ANIM = 12;                  // the image's write ceiling (fps: writes a second at most)
 const POLL_MS = 1000, HOLD_MS = 3000, FRESH_MS = 2000, YIELD_MS = 3000, LOAD_RETRY_MS = 30000;
-const TAKE_MS = 15000;                               // the take-back's longest try (3 of the service's take-overs)
+const TAKE_MS = 15000;
+const NAV_KLASS = 'content', NAV_Z = 50;             // "not navigating": over Waze's map (z 0), under G's TV (z 100)
+const GUIDE_ON_MS = 1000, GUIDE_OFF_MS = 3000;       // guidance on this long: hidden; off this long: back                               // the take-back's longest try (3 of the service's take-overs)
 const RECONNECT_MS = 8000, REMAKE_MS = 2000, ERR_RETRY_MS = 5000, ERR_RETRIES = 3;
 const ANIM_MS = 80;                                  // the parked animation's step
 const SHINE_EVERY = 4200, SHINE_MS = 700, INTRO_MS = 1100;
@@ -211,6 +233,27 @@ function drawing(l, seen, now) {
     return false;                                                        // stalled, hidden, error
 }
 
+/**
+ * A guidance signal's value -> true (guiding), false, or null (not understood). guidingState: the enum
+ * GuidingState (INACTIVE 0, CALCULATING_ROUTE 1, ACTIVE 2), by number or name; projectedGuidanceActive:
+ * a Bool. A struct is searched for its first such member.
+ */
+function guideValue(src, v) {
+    if (v && typeof v === 'object') {
+        const k = Object.keys(v).find((x) => typeof v[x] === 'number' || typeof v[x] === 'boolean' || typeof v[x] === 'string');
+        return k === undefined ? null : guideValue(src, v[k]);
+    }
+    if (src === 'nav') {
+        if (typeof v === 'number') return v === 2;
+        if (typeof v === 'string') return /^(\d+|[A-Z_]+)$/i.test(v) ? (v === '2' || /^active$/i.test(v)) : null;
+        return null;
+    }
+    if (typeof v === 'boolean') return v;
+    if (typeof v === 'number') return v !== 0;
+    if (typeof v === 'string') return /^(true|1)$/i.test(v) ? true : /^(false|0)$/i.test(v) ? false : null;
+    return null;
+}
+
 /** A short name for an app id in the Options line. */
 function appName(app) {
     const a = String(app || '');
@@ -238,17 +281,19 @@ class ClusterLogo {
         this._reset();
         this.err = null; this.errAt = -1e15;
         this.hadSlot = false;                                // the logo has been shown in this run (take-back)
+        this.guide = { nav: null, carplay: null, aa: null }; // the car's guidance signals: null = no answer yet
+        this.rawGuide = false; this.rawSince = this.now(); this.guiding = false;
         this.stats = { layers: 0, sends: 0, bytes: 0, drops: 0, polls: 0, remakes: 0, reconnects: 0, takeBacks: 0 };
     }
     _reset() {
         this.cr = null; this.ready = false; this.ref = 0; this.kind = ''; this.visible = null;
-        this.polled = false; this.others = []; this.idle = []; this.seen = {}; this.lastBusy = ''; this.busyAt = -1e15; this.yieldUntil = -1e15;
+        this.polled = false; this.others = []; this.under = []; this.idle = []; this.seen = {}; this.lastBusy = ''; this.busyAt = -1e15; this.yieldUntil = -1e15;
         this.target = { state: '', holder: '', reason: '', rendering: '' };
         this.layerState = ''; this.refused = '';
         this.frameKey = ''; this.animAt = 0; this.shownAt = 0;
         this.poll = null; this.anim = null;
         this.downAt = this.now(); this.madeAt = 0; this.ownSeen = false; this.ownMissing = 0; this.errRetries = 0; this.errAt2 = 0;
-        this.contend = false; this.takeSince = -1; this.takeGaveUp = false;
+        this.contend = false; this.takeSince = -1; this.takeGaveUp = false; this.mode = '';
     }
 
     /**
@@ -319,11 +364,12 @@ class ClusterLogo {
         cr.on('refused', (op, ref, reason) => { if (this.cr === cr) { this.refused = (op || '?') + ': ' + (reason || '?'); this.log.warn('cluster logo: refused ' + this.refused); } });
         cr.on('status', (text) => {
             if (this.cr !== cr) return;
-            const now = this.now(), seen = {}, others = [], idle = [];
+            const now = this.now(), seen = {}, others = [], under = [], idle = [];
             mapLayers(text, this.app).forEach((l) => {
-                (drawing(l, this.seen, now) ? others : idle).push(l);
+                (drawing(l, this.seen, now) ? (this._covers(l) ? under : others) : idle).push(l);
                 seen[l.app + '#' + l.id] = this.seen[l.app + '#' + l.id];
             });
+            this.under = under;
             this.seen = seen;                                   // layers that went are forgotten
             if (others.length) { this.busyAt = now; this.lastBusy = others[0].app; }
             const was = this.others.map((l) => l.app).join(','), is = others.map((l) => l.app).join(',');
@@ -339,6 +385,33 @@ class ClusterLogo {
         try { cr.connect(); } catch (e) { this.log.warn('cluster logo: connect ' + e.message); }
     }
     _ask() { if (this.cr && this.ready) { this.stats.polls++; try { this.cr.status(); } catch (e) { /* next poll */ } } }
+
+    /**
+     * The car's route guidance (main.js's signal handlers): src 'nav' (NavigationStatus.guidingState),
+     * 'carplay' or 'aa' (projectedGuidanceActive); v: the raw value (guideValue()).
+     */
+    guidance(src, v) {
+        if (!Object.prototype.hasOwnProperty.call(this.guide, src)) return;
+        const g = guideValue(src, v);
+        if (g === null) { this.log.info('cluster logo: ' + src + ' guidance value not understood: ' + JSON.stringify(v)); return; }
+        if (this.guide[src] !== g) this.log.info('cluster logo: ' + src + ' guidance ' + (g ? 'active' : 'off'));
+        this.guide[src] = g;
+        this._apply();
+    }
+    /** "Not navigating" mode: the car's navigation status has answered. */
+    navAware() { return this.guide.nav !== null; }
+    /** A drawing layer the logo covers ("not navigating"): Waze's map, when CarPlay's guidance is known. */
+    _covers(l) { return this.navAware() && appName(l.app) === 'Waze' && this.guide.carplay !== null; }
+    /** The guidance, debounced: on for GUIDE_ON_MS -> guiding, off for GUIDE_OFF_MS -> not. */
+    _guideTick(now) {
+        const raw = this.navAware() && (this.guide.nav === true || this.guide.carplay === true || this.guide.aa === true);
+        if (raw !== this.rawGuide) { this.rawGuide = raw; this.rawSince = now; }
+        const was = this.guiding;
+        if (raw && !this.guiding && now - this.rawSince >= GUIDE_ON_MS) this.guiding = true;
+        if (!raw && this.guiding && now - this.rawSince >= GUIDE_OFF_MS) this.guiding = false;
+        if (was !== this.guiding) this.log.info('cluster logo: ' + (this.guiding ? 'route guidance active - logo hidden' : 'route guidance ended - logo back'));
+        return this.guiding;
+    }
 
     /** Every POLL_MS while open: the connection kept up, the status asked for, our layer kept. */
     _tick() {
@@ -384,7 +457,7 @@ class ClusterLogo {
     _remake() {
         const old = this.ref, kind = this.kind || (this.pixel ? 'pixel' : 'regular');
         if (old) { try { this.cr.drop(old); this.stats.drops++; } catch (e) { /* gone already */ } }
-        this.ref = 0; this.ownSeen = false; this.ownMissing = 0; this.contend = false;
+        this.ref = 0; this.ownSeen = false; this.ownMissing = 0;
         this.stats.remakes++;
         this._make(kind, !!this.visible);
     }
@@ -394,7 +467,7 @@ class ClusterLogo {
      * take-over sits in front of the logo; stop once shown, after TAKE_MS, or when the logo is not shown.
      */
     _takeBack() {
-        if (!this.cr || !this.ref || !this.ready) return;
+        if (!this.cr || !this.ref || !this.ready || this.mode === 'nav') return;   // "not navigating" always contends
         const T = this.target, now = this.now();
         const behind = (T.state === 'parked' || T.state === 'waiting') && T.holder === 'stock';
         if (T.state === 'shown' || !this.visible || this.others.length) this.takeSince = -1;
@@ -415,16 +488,17 @@ class ClusterLogo {
     _apply() {
         if (!this.want || !this.cr || !this.ready || !this.polled) return;
         const now = this.now();
-        const vis = !this.others.length && now - this.busyAt >= HOLD_MS && now >= this.yieldUntil;
-        const kind = this.pixel ? 'pixel' : 'regular';
-        if (!this.ref || this.kind !== kind) {
+        const guiding = this._guideTick(now);
+        const vis = !guiding && !this.others.length && now - this.busyAt >= HOLD_MS && now >= this.yieldUntil;
+        const kind = this.pixel ? 'pixel' : 'regular', mode = this.navAware() ? 'nav' : 'basic';
+        if (!this.ref || this.kind !== kind || this.mode !== mode) {
             if (!this.ref && !vis) return;                 // nothing made until it may show
             this._make(kind, vis);
         } else if (vis !== this.visible) {
             this.visible = vis;
             this.cr.set(this.ref, { visible: vis });
             if (!vis) this.layerState = 'hidden';
-            this.log.info('cluster logo: ' + (vis ? 'shown again' : 'hidden (map in use)'));
+            this.log.info('cluster logo: ' + (vis ? 'shown again' : guiding ? 'hidden (route guidance)' : 'hidden (map in use)'));
         }
         this._takeBack();
         this._animate();
@@ -433,18 +507,19 @@ class ClusterLogo {
     _make(kind, vis) {
         const img = kind === 'pixel' ? this.images.pixel({}) : this.images.regular();
         const at = placement(kind, img);
-        const ref = this.cr.image({ target: TARGET, klass: KLASS, z: Z, exclusive: false, contend: false,
+        const nav = this.navAware();
+        const ref = this.cr.image({ target: TARGET, klass: nav ? NAV_KLASS : KLASS, z: nav ? NAV_Z : Z, exclusive: false, contend: nav,
             visible: vis, x: at.x, y: at.y, w: at.w, h: at.h, iw: img.w, ih: img.h,
             sampling: kind === 'pixel' ? 'nearest' : 'bilinear', fps: kind === 'pixel' ? FPS_ANIM : FPS_STILL });
         if (!ref) { this.log.warn('cluster logo: image layer refused by the client'); return; }
         this._send(ref, img);
         const old = this.ref;
         this.ref = ref; this.kind = kind; this.visible = vis; this.frameKey = 'still'; this.animAt = this.now(); this.madeAt = this.now();
-        this.ownSeen = false; this.ownMissing = 0; this.contend = false;
+        this.ownSeen = false; this.ownMissing = 0; this.contend = nav; this.mode = nav ? 'nav' : 'basic';
         this.layerState = vis ? 'new' : 'hidden';
         this.stats.layers++;
         if (old) { this.cr.drop(old); this.stats.drops++; }
-        this.log.info('cluster logo: ' + kind + ' image ' + img.w + 'x' + img.h + ' (' + Math.round(img.d.length / 1024) + ' KB, once) at ' + at.x + ',' + at.y + ' ' + at.w + 'x' + at.h + ', ambient z ' + Z + (vis ? '' : ', hidden'));
+        this.log.info('cluster logo: ' + kind + ' image ' + img.w + 'x' + img.h + ' (' + Math.round(img.d.length / 1024) + ' KB, once) at ' + at.x + ',' + at.y + ' ' + at.w + 'x' + at.h + ', ' + (nav ? NAV_KLASS + ' z ' + NAV_Z + ', contending (not navigating)' : KLASS + ' z ' + Z) + (vis ? '' : ', hidden'));
     }
     _send(ref, img) {
         if (this.cr.pixels(ref, null, img.d) !== false) { this.stats.sends++; this.stats.bytes += img.d.length; }
@@ -489,15 +564,26 @@ class ClusterLogo {
         if (!this.want) return { kind: 'off', text: 'On - while G\'s Dash is open' };
         if (!this.cr || !this.ready || !this.polled) return { kind: 'wait', text: 'Connecting to renderer' };
         if (this.layerState === 'error') return { kind: 'error', text: 'Renderer refused the logo' };
-        if (this.others.length) return { kind: 'wait', text: 'Waiting - ' + appName(this.others[0].app) + ' is drawing' };
+        if (this.guiding) {
+            return { kind: 'off', text: this.rawGuide ? 'Hidden - route guidance active' : 'Route ended - logo soon' };
+        }
+        if (this.rawGuide) return { kind: 'wait', text: 'Route guidance - hiding' };
+        if (this.others.length) {
+            const n = appName(this.others[0].app);
+            return { kind: 'wait', text: n === 'Waze' ? 'Waiting - Waze map is up' : 'Waiting - ' + n + ' is drawing' };
+        }
         if (!this.visible) {
             const stopped = this.lastBusy && this.now() - this.busyAt < HOLD_MS;
             return { kind: 'wait', text: (stopped ? appName(this.lastBusy) + ' stopped - logo soon' : 'Logo in a moment') };
         }
         const T = this.target;
-        if ((T.state === 'parked' || T.state === 'waiting') && T.holder === 'stock') return { kind: 'wait', text: this.contend ? 'Taking the map area back' : 'Behind the stock map' };
+        const nav = this.mode === 'nav';
+        if ((T.state === 'parked' || T.state === 'waiting') && T.holder === 'stock') {
+            return { kind: 'wait', text: nav ? 'Taking over the stock map' : this.contend ? 'Taking the map area back' : 'Behind the stock map' };
+        }
         if (T.state === 'parked' || T.state === 'waiting') return { kind: 'wait', text: 'Map area taken - waiting' };
         if (T.state === 'shown') {
+            if (nav) return { kind: 'on', text: 'Shown - not navigating' };
             if (this.idle.length) return { kind: 'on', text: appName(this.idle[0].app) + ' idle - logo shown' };
             return { kind: 'on', text: 'Shown' + (T.rendering === 'verified' ? ' (verified)' : '') };
         }
@@ -525,5 +611,5 @@ function motion(t, ew) {
     return { key: 'h' + shine, opts: { shine } };
 }
 
-module.exports = { ClusterLogo, loadClient, trusted, mapLayers, ownLayers, drawing, appName, pixelImage, regularImage, placement, motion, cellRaster,
-    TARGET, KLASS, Z, MAP_W, MAP_H, CELL, LOGO_W, LOGO_H, FPS_STILL, FPS_ANIM, POLL_MS, HOLD_MS, YIELD_MS, FRESH_MS, TAKE_MS, RECONNECT_MS, ERR_RETRY_MS };
+module.exports = { ClusterLogo, loadClient, trusted, mapLayers, ownLayers, drawing, guideValue, appName, pixelImage, regularImage, placement, motion, cellRaster,
+    TARGET, KLASS, Z, MAP_W, MAP_H, CELL, LOGO_W, LOGO_H, FPS_STILL, FPS_ANIM, POLL_MS, HOLD_MS, YIELD_MS, FRESH_MS, TAKE_MS, RECONNECT_MS, ERR_RETRY_MS, NAV_KLASS, NAV_Z, GUIDE_ON_MS, GUIDE_OFF_MS };

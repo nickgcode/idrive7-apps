@@ -1,8 +1,8 @@
 {
   "id": "ng_gsdash",
   "title": "G's Dash",
-  "description": "Driver display and car hub in nine looks (Simple, M Style, GT, Heritage, Flight, Digital '84, Sim Racing, Lumen, Pixel). Swipe between Showcase (the car, Spotify or a clock), Drive (opens first; shift lights, gear, rpm, speed, g-meter, drive mode badge, oil / coolant in °F or the fuel level), Warm-up (warm-up rev limit), G-force (peak hold) and Tires (TPMS). Optional Spotify panel (art, previous / play-pause / next, seek; own QR sign-in, Spotify Premium and mgu-uplink internet). Optional Cluster map setting: CarPlay's map on the instrument cluster through the separately installed Waze on cluster tool (off unless installed and turned on). While open, the G's Dash logo in the cluster's centre map area when no map uses it, through the separately installed Cluster renderer tool (setting, on by default; nothing happens without the tool)",
-  "version": "0.7.3",
+  "description": "Driver display and car hub in nine looks (Simple, M Style, GT, Heritage, Flight, Digital '84, Sim Racing, Lumen, Pixel). Swipe between Showcase (the car, Spotify or a clock), Drive (opens first; shift lights, gear, rpm, speed, g-meter, drive mode badge, oil / coolant in °F or the fuel level), Warm-up (warm-up rev limit), G-force (peak hold) and Tires (TPMS). Optional Spotify panel (art, previous / play-pause / next, seek; own QR sign-in, Spotify Premium and mgu-uplink internet). Optional CarPlay map in the cluster: CarPlay's map on the instrument cluster through the separately installed Waze on cluster tool (off unless installed and turned on). Cluster logo setting: while open, the G's Dash logo in the cluster's centre map area whenever no route guidance runs (over a free-drive map; it steps aside for the car's navigation, CarPlay or Android Auto route guidance, and for G's TV), through the separately installed Cluster renderer tool (on by default; nothing happens without the tool)",
+  "version": "0.7.4",
   "vendor": "ng",
   "loggingId": "OAN1",
   "iconGlyph": "gauge",
@@ -50,6 +50,20 @@
     "de.bmw.powertrain.Range": {
       "_optional": "the fuel bar's range and low-fuel warning: dataRangeDisplay.dataRangeDisplayTotal in .unitRangeDisplay, .rangeWarningFuelLevel (GERING = low)",
       "dataRangeDisplay": "s"
+    },
+    "de.bmw.infotainment.navigation.navigationstatus.NavigationStatus": {
+      "_optional": "the cluster logo's route guidance check: guidingState (INACTIVE / CALCULATING_ROUTE / ACTIVE; ACTIVE hides the logo); without it the logo keeps the 0.7.3 rules (under every other map layer)",
+      "guidingState": "rs"
+    },
+    "de.bmw.infotainment.a4a.carplay.CarPlayManager": {
+      "_optional": "the cluster logo's CarPlay route guidance check (Waze or Maps with a route): projectedGuidanceActive; without it a drawing Waze on cluster map hides the logo",
+      "_instances": "CarPlayManagerInst1",
+      "projectedGuidanceActive": "rs"
+    },
+    "de.bmw.infotainment.sdi.aap.androidautoprojectedmanager.AndroidAutoProjectedManager": {
+      "_optional": "the cluster logo's Android Auto route guidance check: projectedGuidanceActive",
+      "_instances": "AndroidAutoProjectedManagerInst1",
+      "projectedGuidanceActive": "rs"
     }
   },
   "screens": [
@@ -102,7 +116,7 @@
      "options": [["g", "G-meter and peaks"], ["spotify", "Spotify (touch controls)"]]},
     {"key": "bars", "label": "Bottom bars", "type": "choice", "default": "temps",
      "options": [["temps", "Oil & coolant"], ["fuel", "Fuel"]]},
-    {"key": "clusterLogo", "label": "Logo in cluster when map is empty", "type": "choice", "default": "on",
+    {"key": "clusterLogo", "label": "Logo in cluster when not navigating", "type": "choice", "default": "on",
      "options": [["on", "On"], ["off", "Off"]]}
   ],
   "retiredSettings": ["demo", "layout", "renderer", "speedUnit", "spotifyPoll", "showBadge", "lights", "theme"]

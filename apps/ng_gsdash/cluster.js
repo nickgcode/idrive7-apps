@@ -1,6 +1,6 @@
 'use strict';
 /**
- * cluster.js - G's Dash's "Cluster map" setting: a small client for the patch service of the
+ * cluster.js - G's Dash's CarPlay map in the cluster (on the Cluster logo page): a small client for the patch service of the
  * separately installed "Waze on cluster" tool (robertnisipeanu/idrive-apps, installed from the Store).
  * That tool does all the work as root: it patches CarPlay so it sends its instrument-cluster map,
  * and draws it on the cluster. G's Dash only asks it, over the tool's documented line protocol, for
@@ -10,7 +10,7 @@
  * What it reads (nothing stored by G's Dash: the patch service is the only truth):
  *   - passive, files only (the settings row): whether the tool is there, the "change waits for the
  *     next head-unit start" marker, and the map renderer's status file
- *   - the patch socket (only while the Cluster map page is open): one JSON object per line;
+ *   - the patch socket (only while the Cluster logo page is open): one JSON object per line;
  *     G's Dash sends {"cmd":"status"}, and {"cmd":"apply",...} / {"cmd":"revert"} after a confirmation.
  *     It never sends anything else (no reboot, no logs, no capture).
  *
@@ -73,7 +73,7 @@ class ClusterMap {
     }
 
     /* ---------- the patch socket (only while the page is open) ---------- */
-    /** The Cluster map page is shown: ask the patch service for its state (and keep asking). */
+    /** The Cluster logo page is shown: ask the patch service for its state (and keep asking). */
     open() {
         if (this.wanted) return;
         this.wanted = true; this.problem = null; this.note = '';
