@@ -9,7 +9,7 @@
  *
  * What goes there: one "video" layer on the "map" target only (slot 0x100, 1088x480, the area between the
  * dials), class "content" at z 100 (above the CarPlay map of waze-on-cluster, content at z 0, however
- * old either layer is), never "alert", never the "panel" or "hud" targets. It covers the whole map area
+ * old either layer is), never "alert", never the "panel" target (the HUD: see 0.3.0 below). It covers the whole map area
  * and is "exclusive": while it is drawn the service suspends (does not remove) the layers below it on the
  * map, so the picture replaces the CarPlay map instead of sitting on it; the suspended layers write
  * nothing to the display and come back in the flush ours goes. A drawn layer is one with a frame within
@@ -41,6 +41,17 @@
  * handles it, and shown in the status line. 0.2.1 sends none: the status is as before. Nothing here acts
  * on it: the service does the asking again, and the layer, its class, z and stall_ms stay as they are.
  *
+ * 0.3.0, the HUD (an experiment, parked only, see main.js): the same class with target "hud" (slot 0x323,
+ * 800x480, a separate connection) draws either a still test card (an "image" layer: 200x120 RGBA, 96 KB
+ * sent once, doubled twice by the HUD's GPU with nearest sampling) or the same video as on the map, in a
+ * 400x240 frame doubled to 800x480 (4:3: 320x240, shown 640x480; 16:9: 400x224, shown 800x448), black
+ * around. Class "content", z 100, contend (asks again after the stock HMI took the slot; the service's
+ * default hud_take_over_stock = 0 never unmaps the stock HUD content, so behind it ours is only parked),
+ * and NOT exclusive: exclusive only suspends other cluster-render layers below ours on the same target,
+ * it cannot cover the HUD's own content (that is a different mapping in the slot, the KOMBI's queue
+ * decides), and our layer is opaque over the whole target anyway. Never "panel" (it shares the HUD's
+ * scene id), never "alert".
+ *
  * Never throws into the player, never blocks. Node 8: no ?., ?? or object spread.
  */
 const fs = require('fs');
@@ -50,8 +61,14 @@ const CLIENT = process.env.NG_CR_CLIENT || '/var/opt/cluster-render/current/clus
 const SOCK = process.env.NG_CR_SOCK || '/dev/shm/cluster-render/render.sock';
 const TESTING = !!(process.env.NG_CR_CLIENT || process.env.NG_CR_SOCK);
 
-const TARGET = 'map';                     // the only target G's TV uses
+const TARGET = 'map';                     // the cluster's map area (the default target)
 const MAP_W = 1088, MAP_H = 480;          // the map target's size
+/* The targets G's TV may use (never "panel"): size, z and whether the layer is exclusive (see above). */
+const TARGETS = {
+    map: { name: 'map', W: MAP_W, H: MAP_H, exclusive: true, tag: 'cluster', area: 'the map area' },
+    hud: { name: 'hud', W: 800, H: 480, exclusive: false, tag: 'hud', area: 'the HUD' },
+};
+const CARD_W = 200, CARD_H = 120;         // the HUD test card, drawn 4x (800x480) by the HUD's GPU
 const AREA = { x: 0, y: 0, w: MAP_W, h: MAP_H };  // the layer: the whole map area
 const FRAME_W = MAP_W / 2, FRAME_H = MAP_H / 2;   // 544x240, doubled on the cluster's GPU
 const FPS = 15;                           // at most, while the upload cap is at its ceiling
@@ -76,7 +93,9 @@ for (let i = 0; i < 256; i++) {
  * picture in the frame (pw x ph at px, py: the largest that fits at the picture's aspect, even sizes and
  * places for the 4:2:0 chroma, centred) and where that shows on the map (sx, sy, sw, sh).
  */
-function geometry(w, h) {
+function geometry(w, h, target) {
+    const T = TARGETS[target] || TARGETS.map;
+    const AREA = { x: 0, y: 0, w: T.W, h: T.H }, FRAME_W = T.W / 2, FRAME_H = T.H / 2;
     const asp = w / h;
     let pw = Math.round(FRAME_H * asp), ph = FRAME_H;
     if (pw > FRAME_W) { pw = FRAME_W; ph = Math.round(FRAME_W / asp); }
@@ -91,6 +110,45 @@ function geometry(w, h) {
 function blackAtlas(vw, vh) {
     const b = Buffer.alloc(vw * vh * 3 / 2);
     b.fill(128, vw * vh);
+    return b;
+}
+
+/* A 5x7 font for the test card's few letters. */
+const GLYPHS = {
+    'A': '01110100011000111111100011000110001', 'D': '11110100011000110001100011000111110',
+    'E': '11111100001000011110100001000011111', 'G': '01110100011000010111100011000101111',
+    'H': '10001100011000111111100011000110001', 'K': '10001100101010011000101001001010001',
+    'L': '10000100001000010000100001000011111', 'N': '10001110011010110011100011000110001',
+    'O': '01110100011000110001100011000101110', 'P': '11110100011000111110100001000010000',
+    'R': '11110100011000111110101001001010001', 'S': '01111100001000001110000010000111110',
+    'T': '11111001000010000100001000010000100', 'U': '10001100011000110001100011000101110',
+    'V': '10001100011000110001100010101000100', 'Y': '10001100010101000100001000010000100',
+    "'": '00100001000100000000000000000000000', ' ': '00000000000000000000000000000000000',
+};
+/**
+ * The HUD test card: CARD_W x CARD_H RGBA (straight alpha, all opaque), high contrast: black, a white
+ * border, "G'S TV" / "HUD TEST" in white, seven colour bars and "PARKED ONLY" in yellow.
+ */
+function testCard() {
+    const W = CARD_W, H = CARD_H, b = Buffer.alloc(W * H * 4);
+    const px = (x, y, c) => { if (x < 0 || y < 0 || x >= W || y >= H) return; const o = (y * W + x) * 4; b[o] = c[0]; b[o + 1] = c[1]; b[o + 2] = c[2]; b[o + 3] = 255; };
+    const rect = (x, y, w, h, c) => { for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) px(i, j, c); };
+    const text = (s, y, k, c) => {
+        const x0 = Math.round((W - (s.length * 6 - 1) * k) / 2);
+        for (let n = 0; n < s.length; n++) {
+            const g = GLYPHS[s[n]] || GLYPHS[' '];
+            for (let r = 0; r < 7; r++) for (let q = 0; q < 5; q++) if (g[r * 5 + q] === '1') rect(x0 + (n * 6 + q) * k, y + r * k, k, k, c);
+        }
+    };
+    rect(0, 0, W, H, [0, 0, 0]);
+    rect(0, 0, W, 3, [255, 255, 255]); rect(0, H - 3, W, 3, [255, 255, 255]);
+    rect(0, 0, 3, H, [255, 255, 255]); rect(W - 3, 0, 3, H, [255, 255, 255]);
+    text("G'S TV", 10, 3, [255, 255, 255]);
+    text('HUD TEST', 36, 2, [255, 255, 255]);
+    const bars = [[255, 255, 255], [255, 255, 0], [0, 255, 255], [0, 255, 0], [255, 0, 255], [255, 0, 0], [0, 0, 255]];
+    const bw = Math.floor((W - 20) / bars.length), bx = (W - bw * bars.length) >> 1;
+    bars.forEach((c, i) => rect(bx + i * bw, 58, bw, 36, c));
+    text('PARKED ONLY', 100, 1, [255, 204, 0]);
     return b;
 }
 
@@ -179,6 +237,9 @@ class ClusterOut {
         this.log = o.log || { info() {}, warn() {} };
         this.app = o.app || 'ng_tv';
         this.opts = o;
+        this.T = TARGETS[o.target] || TARGETS.map;    // never "panel"
+        this.tag = this.T.tag;
+        this.kind = '';           // the layer: 'video' or 'image' (the HUD test card)
         this.now = o.now || Date.now;
         this.on = false;          // the toggle
         this.cr = null; this.err = null;
@@ -206,7 +267,7 @@ class ClusterOut {
         const c = loadClient(this.opts);
         if (c.error) {
             this.err = c;
-            this.log.warn('cluster: ' + c.text + (c.detail ? ' (' + c.detail + ')' : ''));
+            this.log.warn(this.tag + ': ' + c.text + (c.detail ? ' (' + c.detail + ')' : ''));
             return;
         }
         this.err = null;
@@ -216,26 +277,27 @@ class ClusterOut {
         cr.on('ready', () => {
             if (this.cr !== cr) return;
             this.ready = true;
-            this.log.info('cluster: connected (' + (cr.backend || '?') + ', targets ' + (cr.targets || '?') + ')');
+            this.log.info(this.tag + ': connected (' + (cr.backend || '?') + ', targets ' + (cr.targets || '?') + ')');
         });
-        cr.on('disconnected', () => { if (this.cr === cr) { this.ready = false; this.connectAt = this.now(); this.log.warn('cluster: renderer gone - reconnecting'); } });
+        cr.on('disconnected', () => { if (this.cr === cr) { this.ready = false; this.connectAt = this.now(); this.log.warn(this.tag + ': renderer gone - reconnecting'); } });
         cr.on('layer', (ref, state, reason) => {
             if (this.cr !== cr || ref !== this.ref) return;
-            if (state !== this.layerState || reason !== this.layerReason) this.log.info('cluster: layer ' + state + (reason ? ' (' + reason + ')' : ''));
+            if (state !== this.layerState || reason !== this.layerReason) this.log.info(this.tag + ': layer ' + state + (reason ? ' (' + reason + ')' : ''));
             this.layerState = state || ''; this.layerReason = reason || '';
         });
         // the target event's "rendering" (service 0.2.2), which the client's 'target' event leaves out
         let rendering = '';
+        const TN = this.T.name;
         const handle = cr._event;
         if (typeof handle === 'function') {
             cr._event = function (ev) {
-                try { if (ev && ev.ev === 'target' && ev.target === TARGET) rendering = typeof ev.rendering === 'string' ? ev.rendering : ''; } catch (e) { /* as 0.2.1 */ }
+                try { if (ev && ev.ev === 'target' && ev.target === TN) rendering = typeof ev.rendering === 'string' ? ev.rendering : ''; } catch (e) { /* as 0.2.1 */ }
                 return handle.apply(this, arguments);
             };
         }
         cr.on('target', (name, state, holder, reason) => {
-            if (this.cr !== cr || name !== TARGET) return;
-            this.log.info('cluster: map ' + state + (holder ? ' holder ' + holder : '') + (reason ? ' (' + reason + ')' : '') + (rendering ? ', rendering ' + rendering : ''));
+            if (this.cr !== cr || name !== TN) return;
+            this.log.info(this.tag + ': ' + TN + ' ' + state + (holder ? ' holder ' + holder : '') + (reason ? ' (' + reason + ')' : '') + (rendering ? ', rendering ' + rendering : ''));
             this.target = { state: state || '', holder: holder || '', reason: reason || '', rendering: rendering };
             rendering = '';
         });
@@ -243,15 +305,15 @@ class ClusterOut {
             if (this.cr !== cr) return;
             this.budget = { cap, max, reason: reason || '' };
             const fps = fpsForBudget(cap, max);
-            if (fps !== this.fps) this.log.info('cluster: upload cap ' + cap + ' of ' + max + ' KB/s - ' + fps + ' pictures a second');
+            if (fps !== this.fps) this.log.info(this.tag + ': upload cap ' + cap + ' of ' + max + ' KB/s - ' + fps + ' pictures a second');
             this.fps = fps;
         });
         cr.on('refused', (op, ref, reason) => {
             if (this.cr !== cr) return;
             this.refused = (op || '?') + ': ' + (reason || '?');
-            this.log.warn('cluster: refused ' + this.refused);
+            this.log.warn(this.tag + ': refused ' + this.refused);
         });
-        try { cr.connect(); } catch (e) { this.log.warn('cluster: connect ' + e.message); }
+        try { cr.connect(); } catch (e) { this.log.warn(this.tag + ': connect ' + e.message); }
     }
 
     /**
@@ -263,38 +325,62 @@ class ClusterOut {
         const now = this.now();
         if (now - this.lastAt < 1000 / this.fps - 4) return false;
         try {
-            const key = f.w + 'x' + f.h;
+            const key = f.w + 'x' + f.h, T = this.T;
+            if (this.ref && this.kind !== 'video') this._drop();      // the test card goes first
             if (this.ref && key !== this.key) {
                 // a new picture size: the same layer and frame (always the whole map area), the picture
                 // placed again on black, so the map below is not let through for a moment
-                const g = geometry(f.w, f.h);
+                const g = geometry(f.w, f.h, T.name);
                 this.geo = g; this.key = key; this.maps = null;
                 this.atlas = blackAtlas(g.vw, g.vh);
-                this.log.info('cluster: the picture ' + g.pw + 'x' + g.ph + ' shown ' + g.sw + 'x' + g.sh + ' at ' + g.sx + ',' + g.sy);
+                this.log.info(this.tag + ': the picture ' + g.pw + 'x' + g.ph + ' shown ' + g.sw + 'x' + g.sh + ' at ' + g.sx + ',' + g.sy);
             }
             if (!this.ref) {
-                const g = geometry(f.w, f.h);
-                const ref = this.cr.video({ target: TARGET, klass: 'content', z: Z, exclusive: EXCLUSIVE, x: g.x, y: g.y, w: g.w, h: g.h,
+                const g = geometry(f.w, f.h, T.name);
+                const ref = this.cr.video({ target: T.name, klass: 'content', z: Z, exclusive: T.exclusive, x: g.x, y: g.y, w: g.w, h: g.h,
                     vw: g.vw, vh: g.vh, fps: FPS, stall_ms: STALL_MS, contend: true });
-                if (!ref) { this.log.warn('cluster: video layer refused by the client'); return false; }
-                this.ref = ref; this.geo = g; this.key = key;
+                if (!ref) { this.log.warn(this.tag + ': video layer refused by the client'); return false; }
+                this.ref = ref; this.geo = g; this.key = key; this.kind = 'video';
                 this.atlas = blackAtlas(g.vw, g.vh);
                 this.layerState = 'new'; this.layerReason = '';
-                this.log.info('cluster: video layer ' + g.vw + 'x' + g.vh + ' over the whole map (exclusive), the picture ' + g.pw + 'x' + g.ph + ' shown ' + g.sw + 'x' + g.sh + ' at ' + g.sx + ',' + g.sy);
+                this.log.info(this.tag + ': video layer ' + g.vw + 'x' + g.vh + ' over the whole ' + T.name + (T.exclusive ? ' (exclusive)' : '') + ', the picture ' + g.pw + 'x' + g.ph + ' shown ' + g.sw + 'x' + g.sh + ' at ' + g.sx + ',' + g.sy);
             }
             this.maps = toAtlas(f, this.geo.pw, this.geo.ph, this.atlas, this.maps, this.geo);
             if (!this.cr.frame(this.ref, this.atlas, ++this.id)) return false;
             this.lastAt = now; this.sent++;
             return true;
         } catch (e) {
-            this.log.warn('cluster: frame ' + e.message);
+            this.log.warn(this.tag + ': frame ' + e.message);
+            return false;
+        }
+    }
+
+    /**
+     * The HUD test card (target "hud" only): one image layer over the whole HUD, sent once (the client
+     * sends it whole again after a reconnect). Idempotent; true while it is up. Only call while parked.
+     */
+    card() {
+        if (this.T.name !== 'hud' || !this.on || !this.cr || !this.ready) return false;
+        if (this.ref && this.kind === 'image') return true;
+        try {
+            if (this.ref) this._drop();
+            const ref = this.cr.image({ target: 'hud', klass: 'content', z: Z, exclusive: false, x: 0, y: 0, w: this.T.W, h: this.T.H,
+                iw: CARD_W, ih: CARD_H, sampling: 'nearest', contend: true });
+            if (!ref) { this.log.warn('hud: image layer refused by the client'); return false; }
+            this.ref = ref; this.kind = 'image'; this.layerState = 'new'; this.layerReason = '';
+            this.cr.pixels(ref, null, testCard());
+            this.sent++;
+            this.log.info('hud: test card ' + CARD_W + 'x' + CARD_H + ' over the whole HUD (' + this.T.W + 'x' + this.T.H + ')');
+            return true;
+        } catch (e) {
+            this.log.warn('hud: test card ' + e.message);
             return false;
         }
     }
 
     _drop() {
         const ref = this.ref;
-        this.ref = 0; this.key = ''; this.geo = null; this.layerState = ''; this.layerReason = ''; this.lastAt = -1e15;
+        this.ref = 0; this.kind = ''; this.key = ''; this.geo = null; this.layerState = ''; this.layerReason = ''; this.lastAt = -1e15;
         if (ref && this.cr) { try { this.cr.drop(ref); } catch (e) { /* gone */ } }
     }
 
@@ -302,7 +388,7 @@ class ClusterOut {
     stop() {
         if (!this.ref) return;
         this._drop();
-        this.log.info('cluster: picture off');
+        this.log.info(this.tag + ': picture off');
     }
 
     /** Toggle off, app end: drop and disconnect. */
@@ -322,6 +408,7 @@ class ClusterOut {
      * playing: the player has pictures to send.
      */
     status(parked, playing) {
+        if (this.T.name === 'hud') return this._hudStatus(parked, playing);
         if (!this.on) return { level: 'off', text: 'Off' };
         if (this.err) return { level: 'bad', text: this.err.text };
         if (!this.cr) return { level: 'bad', text: 'Cluster renderer unavailable' };
@@ -351,6 +438,43 @@ class ClusterOut {
         if (ls === 'stalled') return { level: 'info', text: 'Waiting for pictures...' };
         return { level: 'info', text: 'Asking for the map area...' };
     }
+
+    /** What the service reports for the target, in its own words: requested / shown / parked / ... */
+    service() {
+        const t = this.target;
+        if (!t.state) return this.ref ? 'requested' : 'idle';
+        const st = t.state === 'acquiring' ? 'requested' : t.state;
+        return st + (t.holder && t.holder !== 'none' ? ' (' + t.holder + ')' : '') + (t.rendering && t.rendering !== 'none' ? ', rendering ' + t.rendering : '');
+    }
+
+    _hudStatus(parked, playing) {
+        if (!this.on) return { level: 'off', text: 'Off' };
+        if (this.err) return { level: 'bad', text: this.err.text };
+        if (!this.cr) return { level: 'bad', text: 'Cluster renderer unavailable' };
+        if (!this.ready) {
+            if (!exists(this.sock || SOCK)) return { level: 'bad', text: 'Cluster renderer not running (no socket)' };
+            return this.now() - this.connectAt > READY_MS ? { level: 'bad', text: 'Cluster renderer not answering' }
+                : { level: 'info', text: 'Connecting to the cluster renderer...' };
+        }
+        const svc = ' [HUD: ' + this.service() + ']';
+        if (!parked) return { level: 'info', text: 'Ready - only when parked' + svc };
+        if (!this.ref) return { level: 'info', text: (playing ? 'Starting...' : 'Ready - press Play') + svc };
+        const t = this.target, ls = this.layerState, what = this.kind === 'image' ? 'Test card' : 'Playing';
+        if (this.refused && ls !== 'shown') return { level: 'bad', text: 'Refused (' + this.refused + ')' + svc };
+        if (ls === 'error') return { level: 'bad', text: 'Refused by the renderer' + (this.layerReason ? ' (' + this.layerReason + ')' : '') + svc };
+        if (t.state === 'unavailable') return { level: 'bad', text: 'HUD unavailable' + svc };
+        if (ls === 'shown' || t.state === 'shown') {
+            const g = this.geo;
+            const detail = this.kind === 'image' ? ' on the HUD' : ' on the HUD' + (g ? ' - ' + g.sw + 'x' + g.sh : '') + ' ' + this.fps + ' fps';
+            const level = t.rendering === 'checking' ? 'warn' : 'ok';
+            return { level, text: what + detail + svc };
+        }
+        if (/scene id/.test(t.reason)) return { level: 'warn', text: 'HUD busy - another app uses the cluster panel (it shares the HUD\'s scene)' + svc };
+        if (t.state === 'parked' || t.state === 'waiting') return { level: 'warn', text: 'HUD busy - the car\'s own HUD content is in front' + svc };
+        if (ls === 'suspended') return { level: 'warn', text: 'Hidden by other HUD content' + svc };
+        if (ls === 'stalled') return { level: 'info', text: 'Waiting for pictures...' + svc };
+        return { level: 'info', text: 'Asking for the HUD...' + svc };
+    }
 }
 
-module.exports = { ClusterOut, loadClient, toAtlas, blackAtlas, geometry, fpsForBudget, trusted, TARGET, AREA, FPS, STALL_MS, Z, EXCLUSIVE };
+module.exports = { ClusterOut, loadClient, toAtlas, blackAtlas, geometry, fpsForBudget, trusted, testCard, TARGET, TARGETS, AREA, FPS, STALL_MS, Z, EXCLUSIVE, CARD_W, CARD_H };

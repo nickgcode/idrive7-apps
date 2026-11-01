@@ -20,6 +20,12 @@
  * when parked". Only where there is no car at all (no speed and no car signals: the emulator without
  * signals, the PC preview) the environment variable GSTV_SIMULATE_PARKED=1 counts as parked, for testing.
  *
+ * 0.3.0, the HUD (EXPERIMENT, parked only, each off by default and off again at every start): "HUD test" shows
+ * a still test card on the HUD for 30 s, "Play in HUD" the same picture as Play in cluster on the HUD (tv_cluster.js,
+ * target "hud"). One of Play in cluster / Play in HUD / HUD test at a time: map and HUD at once is allowed by the
+ * renderer (different scene ids, one shared budget) but has not been seen working on the car, and two videos
+ * would take up to about 4.5 of its 6 MB/s.
+ *
  * Full-screen touch app (kit/runtime/fullscreen.js); the HMI's bar buttons and the More menu do the same
  * jobs where the kit can't run the screen. Node 8: no optional chaining, no ?? and no object spread.
  */
@@ -42,7 +48,9 @@ const VIDEO_ID = 1;                 // the renderer's video id, and the pixel im
 const DOCK_H = 116, GB_W = 116, HEAD_H = 72;
 const MAX_KMH = parkedWatch.MAX_KMH;    // 3
 const RESUME_MS = 2000;             // parked this long before the picture comes back
-const ASK_MS = 5000;                // Play in cluster: the second tap that confirms, within this
+const ASK_MS = 5000;                // Play in cluster / HUD, HUD test: the second tap that confirms, within this
+// the HUD test card's time; a test may shorten it (never lengthen)
+const HUD_TEST_MS = Math.min(30000, Number(process.env.GSTV_HUD_TEST_MS) || 30000);
 const RETUNE_MS = 60000;            // blanked longer than this: back to what the channel plays now
 const THEME_NAME = { m_red: 'M Red', m_tricolour: 'M Tricolour', ice: 'Ice White', amber: 'Night Amber' };
 const MODE_NAME = { auto: 'Auto', full: 'Every picture', light: 'Light (about 10 fps)' };
@@ -115,6 +123,9 @@ mgu.run({
         const car = new Car(tapped, ['gear']);
         const parked = parkedWatch.watch(tapped, log);
         const cluster = new ClusterOut({ log, app: ctx.spec.id || 'ng_tv' });
+        const hud = new ClusterOut({ log, app: ctx.spec.id || 'ng_tv', target: 'hud' });
+        // the HUD experiment is never on at a start, whatever was saved
+        ['hud', 'hudtest'].forEach((k) => { if (settings.get(k)) settings.set(k, false); });
 
         let page = 'main';
         let toast = null;
@@ -136,7 +147,7 @@ mgu.run({
         };
         // Play in cluster: pictures handed over at least 15 a second for the cluster (it keeps to its own
         // 15 or fewer); the centre screen's image paths still get only their own rate
-        const capFps = () => (settings.get('cluster') && gateOpen ? Math.max(screenFps(), 15) : screenFps());
+        const capFps = () => ((settings.get('cluster') || settings.get('hud')) && gateOpen ? Math.max(screenFps(), 15) : screenFps());
         let imgAt = 0;
         const player = new Player({
             net, log, dir: __dirname,
@@ -146,15 +157,21 @@ mgu.run({
                 if (!gateOpen) return;                         // never a picture while not parked
                 if (videoPath()) shm.write(f);
                 else { const now = Date.now(); if (now - imgAt >= 1000 / screenFps() - 5) { imgAt = now; img.write(f); } }
-                if (settings.get('cluster')) {
-                    if (gate().ok) cluster.write(f);           // the gate again, now, before each cluster picture
-                    else gateStep();                           // closes the gate and takes the picture off
+                const toCluster = !!settings.get('cluster'), toHud = !!settings.get('hud');
+                if (toCluster || toHud) {
+                    if (gate().ok) {                           // the gate again, now, before each cluster / HUD picture
+                        if (toCluster) cluster.write(f);
+                        if (toHud) hud.write(f);
+                    } else gateStep();                         // closes the gate and takes the picture off
                 }
             },
         });
         player.on('state', () => {
             // no pictures coming: off the cluster now rather than after the 1 s stall
-            if (/^(idle|tuning|paused|offline|error)$/.test(player.state)) cluster.stop();
+            if (/^(idle|tuning|paused|offline|error)$/.test(player.state)) {
+                cluster.stop();
+                if (!settings.get('hudtest')) hud.stop();      // the test card does not depend on the player
+            }
             labels();
         });
 
@@ -210,7 +227,7 @@ mgu.run({
                     gateOpen = false; gatedAt = now;
                     log.info('gate: closed (' + g.why + ')');
                     player.pause();
-                    blank();
+                    blank(g.why);
                 }
                 return;
             }
@@ -221,8 +238,10 @@ mgu.run({
                 if (want && visible()) resumeOrLive();
             }
         }
-        function blank() {
-            cluster.stop();                                    // first: the cluster picture goes at once
+        function blank(why) {
+            cluster.stop();                                    // first: the cluster and HUD pictures go at once
+            hud.stop();
+            if (settings.get('hudtest')) endHudTest(why || 'hidden');
             img.clear();
             const gpu = ctx.display && ctx.display.gpu;
             if (gpu && gpu.dropVideo) gpu.dropVideo(VIDEO_ID);
@@ -253,49 +272,83 @@ mgu.run({
         ui.onClick('BTN_LIVE', goLive);
         ui.onClick('BTN_MORE', () => ui.open('MORE'));
 
-        /* ----- Play in cluster (setting 'cluster', default off) ----- */
-        let clusterAsk = 0;                                    // first tap asks, a second within ASK_MS turns it on
-        // The confirm holds for every way in: the dock button, the own settings page, and the kit's generic
-        // settings (the HMI's More menu checkbox, the settings sheet), which set the bool in one tap. A change
-        // to on that did not come through a second tap within ASK_MS counts as the first tap and is undone.
-        let clusterOk = false;
-        const askCluster = () => {
-            clusterAsk = Date.now();
-            say('Tap Cluster again to play in the cluster\'s map area (parked only)', ASK_MS);
+        /* ----- Play in cluster ('cluster'), Play in HUD ('hud'), HUD test ('hudtest'): all off by default ----- */
+        // A first tap asks, a second within ASK_MS turns it on. The confirm holds for every way in: the dock button,
+        // the own settings page, and the kit's generic settings (the HMI's More menu checkbox, the settings sheet),
+        // which set the bool in one tap. A change to on that did not come through a second tap within ASK_MS counts
+        // as the first tap and is undone. Turning one on turns the others off: one cluster / HUD output at a time.
+        const OUT = {
+            cluster: { name: 'Cluster', ask: 'Tap Cluster again to play in the cluster\'s map area (parked only)' },
+            hud: { name: 'Play in HUD', ask: 'Tap again to play in the HUD (experiment, parked only)' },
+            hudtest: { name: 'HUD test', ask: 'Tap again to show a test card in the HUD for 30 s (parked only)' },
         };
-        function toggleCluster() {
-            if (settings.get('cluster')) { clusterAsk = 0; settings.set('cluster', false); say('Cluster: off'); return; }
-            if (Date.now() - clusterAsk > ASK_MS) { askCluster(); return; }
-            clusterAsk = 0; toast = null;
-            clusterOk = true;
-            try { settings.set('cluster', true); } finally { clusterOk = false; }
+        const asks = { cluster: 0, hud: 0, hudtest: 0 };
+        let okKey = '';
+        let hudTestAt = 0;
+        const asking = (k) => Date.now() - asks[k] < ASK_MS;
+        const askOut = (k) => { asks[k] = Date.now(); say(OUT[k].ask, ASK_MS); };
+        function toggleOut(k) {
+            if (settings.get(k)) { asks[k] = 0; settings.set(k, false); say(OUT[k].name + ': off'); return; }
+            if (Date.now() - asks[k] > ASK_MS) { askOut(k); return; }
+            asks[k] = 0; toast = null;
+            okKey = k;
+            try { settings.set(k, true); } finally { okKey = ''; }
+        }
+        const toggleCluster = () => toggleOut('cluster');
+        function endHudTest(why) {
+            hud.stop();
+            log.info('hudtest: off (' + why + ')');
+            settings.set('hudtest', false);
+            say('HUD test: ended (' + why + ')');
         }
         settings.onChange((key, value) => {
-            if (key !== 'cluster') return;
-            if (value && !clusterOk) {
-                if (Date.now() - clusterAsk > ASK_MS) {
-                    askCluster();
-                    log.info('cluster: asked to confirm (one tap in the settings)');
-                    settings.set('cluster', false);           // undone: the listeners see off again
+            if (!OUT[key]) return;
+            if (value && okKey !== key) {
+                if (Date.now() - asks[key] > ASK_MS) {
+                    askOut(key);
+                    log.info(key + ': asked to confirm (one tap in the settings)');
+                    settings.set(key, false);                 // undone: the listeners see off again
                     return;
                 }
-                clusterAsk = 0; toast = null;                  // the second tap within ASK_MS
+                asks[key] = 0; toast = null;                   // the second tap within ASK_MS
             }
-            cluster.enable(!!value);
-            log.info('cluster: ' + (value ? 'on' : 'off'));
+            if (value) {
+                Object.keys(OUT).forEach((k) => {
+                    if (k !== key && settings.get(k)) { log.info(k + ': off (' + key + ' turned on; one at a time)'); settings.set(k, false); }
+                });
+            }
+            if (key === 'cluster') cluster.enable(!!value);
+            else {
+                if (key === 'hudtest') hudTestAt = value ? Date.now() : 0;
+                if (!value) hud.stop();
+                hud.enable(!!(settings.get('hud') || settings.get('hudtest')));
+            }
+            log.info(key + ': ' + (value ? 'on' : 'off'));
             labels();
         });
         cluster.enable(!!settings.get('cluster'));
         const clusterText = (s) => (/^Cluster /.test(s.text) ? s.text : 'Cluster: ' + s.text);
-        const clusterLine = () => clusterText(cluster.status(gateOpen, gateOpen && want && !player.paused && player.state === 'playing'));
+        /** The status of whichever output is on ({ level, text }), or null. */
+        function outStatus(playing) {
+            if (settings.get('cluster')) { const cs = cluster.status(gateOpen, playing); return { level: cs.level, text: clusterText(cs) }; }
+            if (settings.get('hud')) { const hs = hud.status(gateOpen, playing); return { level: hs.level, text: 'Play in HUD: ' + hs.text }; }
+            if (settings.get('hudtest')) {
+                const left = Math.max(0, Math.ceil((HUD_TEST_MS - (Date.now() - hudTestAt)) / 1000));
+                const hs = hud.status(gateOpen, true);
+                return { level: hs.level, text: 'HUD test (' + left + ' s): ' + hs.text };
+            }
+            return null;
+        }
+        const outLine = () => { const o = outStatus(gateOpen && want && !player.paused && player.state === 'playing'); return o ? o.text : ''; };
 
         ui.onVisible((name, on) => {
             if (name !== 'MAIN' && name !== 'MORE') return;
             if (ui.isVisible('MAIN') || ui.isVisible('MORE')) { gateStep(); if (gateOpen && want) resumeOrLive(); }
-            else { lastDraw = 0; player.pause(); gatedAt = gatedAt || Date.now(); blank(); }
+            else { lastDraw = 0; player.pause(); gatedAt = gatedAt || Date.now(); blank('app hidden'); }
         });
         const cleanup = () => {
             try { cluster.close(); } catch (e) { /* gone */ }
+            try { hud.close(); } catch (e) { /* gone */ }
             try { shm.remove(); } catch (e) { /* gone */ }
         };
         process.on('exit', cleanup);
@@ -304,7 +357,11 @@ mgu.run({
         let clusterShown = '';
         setInterval(() => {
             gateStep();
-            const cl = settings.get('cluster') ? clusterLine() : '';
+            if (settings.get('hudtest')) {
+                if (Date.now() - hudTestAt >= HUD_TEST_MS) endHudTest(Math.round(HUD_TEST_MS / 1000) + ' s up');
+                else if (gateOpen && gate().ok && visible()) hud.card();   // once; the card stays until stopped
+            }
+            const cl = outLine();
             if (cl !== clusterShown) { clusterShown = cl; labels(); }
             if (chState !== 'ok' && chState !== 'loading' && Date.now() >= chRetry && visible() && gateOpen && want) live();
         }, 250);
@@ -323,7 +380,8 @@ mgu.run({
         }
         function labels() {
             label('BTN_PLAY', want && !player.paused ? 'Pause' : 'Play');
-            label('MORE_INFO', statusLine() + ' | video only, no sound yet' + (settings.get('cluster') ? ' | ' + clusterLine() : ''));
+            const ol = outLine();
+            label('MORE_INFO', statusLine() + ' | video only, no sound yet' + (ol ? ' | ' + ol : ''));
         }
         labels();
 
@@ -418,11 +476,11 @@ mgu.run({
             const bad = !g.ok || player.state === 'error' || chState === 'error' || chState === 'offline' || player.state === 'offline';
             cv.circle(X + 9, y - 8, 8, !g.ok ? t.dim : bad ? t.crit : player.state === 'playing' ? '#2fd27a' : on);
             wrap(cv, st, 24, W - 28, 2).forEach((s) => { cv.text(s, X + 28, y, 24, t.text, { literal: true }); y += 32; });
-            if (settings.get('cluster')) {
-                const cs = cluster.status(gateOpen, playingPic && player.state === 'playing');
+            const cs = outStatus(playingPic && player.state === 'playing');
+            if (cs) {
                 const col = cs.level === 'ok' ? '#2fd27a' : cs.level === 'bad' ? t.crit : cs.level === 'warn' ? '#ffcc33' : t.dim;
                 cv.roundRect(X + 3, y - 14, 12, 12, 3, col);
-                cv.text(fit(cv, clusterText(cs), 20, W - 28), X + 28, y, 20, cs.level === 'bad' ? t.crit : t.text, { literal: true });
+                cv.text(fit(cv, cs.text, 20, W - 28), X + 28, y, 20, cs.level === 'bad' ? t.crit : t.text, { literal: true });
                 y += 30;
             }
             if (gateOpen && inf.w) {
@@ -442,11 +500,11 @@ mgu.run({
                 cv.circle(px, py, 10, gateOpen ? t.crit : t.dim);
                 cv.strokeRoundRect(px - 21, py - 21, 42, 42, 21, 3, gc);
             });
-            const clOn = !!settings.get('cluster'), asking = Date.now() - clusterAsk < ASK_MS;
+            const clOn = !!settings.get('cluster'), clAsking = asking('cluster');
             const cbx = X + 2 * (bw + 16);
-            action(cv, t, 'cluster', cbx, DY, bw, DOCK_H, asking ? 'Tap again' : clOn ? 'Cluster on' : 'Cluster', toggleCluster, (px, py) => {
+            action(cv, t, 'cluster', cbx, DY, bw, DOCK_H, clAsking ? 'Tap again' : clOn ? 'Cluster on' : 'Cluster', toggleCluster, (px, py) => {
                 // the cluster's outline: two dials and the area between them
-                const c = clOn ? (t.sel || t.accent) : asking ? '#ffcc33' : t.text;
+                const c = clOn ? (t.sel || t.accent) : clAsking ? '#ffcc33' : t.text;
                 cv.strokeRoundRect(px - 30, py - 15, 60, 30, 15, 3, c);
                 cv.circle(px - 16, py, 6, c); cv.circle(px + 16, py, 6, c);
                 if (clOn) cv.fillRect(px - 6, py - 7, 12, 14, c);
@@ -473,6 +531,8 @@ mgu.run({
             ['theme', 'Colours', (v) => THEME_NAME[v] || v],
             ['renderer', 'Renderer', (v) => (v === 'software' ? 'Software (fallback)' : 'GPU')],
             ['cluster', 'Play in cluster (parked)', (v) => (v ? 'On' : 'Off')],
+            ['hudtest', 'HUD test (30 s, parked)', (v) => (v ? 'On' : 'Off')],
+            ['hud', 'Play in HUD (parked, experiment)', (v) => (v ? 'On' : 'Off')],
         ];
         function drawSettings(cv, t, A) {
             const on = t.accent2 || t.accent, hy = A.y, cyH = hy + HEAD_H / 2, bw = 220;
@@ -496,6 +556,7 @@ mgu.run({
                 ['Decoder', inf.decMs ? 'WebAssembly, ' + inf.decMs.toFixed(1) + ' ms a picture' + (inf.light ? ' (light)' : '') : 'WebAssembly (FFmpeg H.264)'],
                 ['Output', pathName()],
                 ['Cluster', settings.get('cluster') ? cluster.status(gateOpen, gateOpen && player.state === 'playing').text : 'Off (Play in cluster)'],
+                ['HUD', settings.get('hud') || settings.get('hudtest') ? outLine() : 'Off (HUD test, Play in HUD)'],
                 ['Sound', 'None yet: no verified way for an app to play audio'],
                 ['Source', 'Programmes stream from the Internet Archive; no DRM'],
             ];
@@ -511,9 +572,9 @@ mgu.run({
                 const yy = top + 36 + i * (rh + rgap), key = 'set:' + r[0];
                 plate(cv, t, rx, yy, colW, rh, false, isDown(key));
                 cv.text(r[1].toUpperCase(), rx + 20, yy + rh / 2 - 6, 15, t.dim, { font: 'bold', spacing: 1.5, literal: true });
-                const asking = r[0] === 'cluster' && Date.now() - clusterAsk < ASK_MS;
-                cv.text(asking ? 'Tap again to turn on' : r[2](settings.get(r[0])), rx + 20, yy + rh / 2 + 22, 24, asking ? '#ffcc33' : t.text, { font: 'bold', literal: true });
-                FS.button(cv, key, rx, yy, colW, rh, () => { downKey = key; downAt = Date.now(); if (r[0] === 'cluster') toggleCluster(); else settings.cycle(r[0]); }, { slop: 6, r: 14 });
+                const ask = !!OUT[r[0]] && asking(r[0]);
+                cv.text(ask ? 'Tap again to turn on' : r[2](settings.get(r[0])), rx + 20, yy + rh / 2 + 22, 24, ask ? '#ffcc33' : t.text, { font: 'bold', literal: true });
+                FS.button(cv, key, rx, yy, colW, rh, () => { downKey = key; downAt = Date.now(); if (OUT[r[0]]) toggleOut(r[0]); else settings.cycle(r[0]); }, { slop: 6, r: 14 });
             });
         }
 
