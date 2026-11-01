@@ -9,12 +9,21 @@
  *
  * What goes there: one "video" layer on the "map" target only (slot 0x100, 1088x480, the area between the
  * dials), class "content" at z 100 (above the CarPlay map of waze-on-cluster, content at z 0, however
- * old either layer is; dropped, the map shows again), never "alert", never "exclusive", never the "panel" or "hud" targets. The
- * picture is fitted into a 640x480 area centred in the map (x 224). Each frame is the decoder's I420
- * picture scaled to fit 320x240 and repacked into the service's 4:2:0 atlas (Y rows, then U and V side by
- * side in h/2 rows), its levels stretched from limited to full range (the service's shader is full-range
- * BT.601). At most 15 a second: about 1.7 MB/s worst case, well under the service's shared 6000 KB/s
- * ceiling; fewer a second when the service reports a lower upload cap.
+ * old either layer is), never "alert", never the "panel" or "hud" targets. It covers the whole map area
+ * and is "exclusive": while it is drawn the service suspends (does not remove) the layers below it on the
+ * map, so the picture replaces the CarPlay map instead of sitting on it; the suspended layers write
+ * nothing to the display and come back in the flush ours goes. A drawn layer is one with a frame within
+ * stall_ms, so a stalled picture also gives the map back. Layers above ours (overlay, alert) still show.
+ *
+ * The frame is 544x240, half the map area, which the cluster's GPU doubles to 1088x480: the picture
+ * fitted into it at its own aspect (4:3: 320x240, shown 640x480 at x 224; 16:9: 426x240, shown 852x480),
+ * black around it (the bars never change, so after the first frame the service writes only the picture's
+ * tiles). Each frame is the decoder's I420 picture scaled to that size and repacked into the service's
+ * 4:2:0 atlas (Y rows, then U and V side by side in h/2 rows), its levels stretched from limited to full
+ * range (the service's shader is full-range BT.601). At most 15 a second: 196 KB a frame over the local
+ * socket; to the cluster about 1.7 MB/s worst case for 4:3 (2.3 MB/s for 16:9), with the map below
+ * suspended and writing nothing, well under the service's shared 6000 KB/s ceiling; fewer a second when
+ * the service reports a lower upload cap.
  *
  * Safety (main.js decides when; this file makes it immediate): stop() drops the layer, which the service
  * removes at once (no fade). stall_ms 1000 (the service's minimum) as a backstop: if frames stop without a
@@ -43,12 +52,13 @@ const TESTING = !!(process.env.NG_CR_CLIENT || process.env.NG_CR_SOCK);
 
 const TARGET = 'map';                     // the only target G's TV uses
 const MAP_W = 1088, MAP_H = 480;          // the map target's size
-const AREA = { x: 224, y: 0, w: 640, h: 480 };   // the picture's area, centred in the map
-const MAX_VW = 320, MAX_VH = 240;         // the atlas at most (scaled up on the cluster's GPU)
+const AREA = { x: 0, y: 0, w: MAP_W, h: MAP_H };  // the layer: the whole map area
+const FRAME_W = MAP_W / 2, FRAME_H = MAP_H / 2;   // 544x240, doubled on the cluster's GPU
 const FPS = 15;                           // at most, while the upload cap is at its ceiling
 const Z = 100;                            // above other "content" layers on the map whatever their age (the
                                           // service orders by class, then z, then newest; the CarPlay map of
-                                          // waze-on-cluster is content at z 0), so no "exclusive" or "alert"
+                                          // waze-on-cluster is content at z 0), never "alert"
+const EXCLUSIVE = true;                   // the layers below ours on the map are suspended while ours is drawn
 const STALL_MS = 1000;                    // the service's minimum
 const READY_MS = 5000;                    // no hello within this: "not answering"
 
@@ -61,37 +71,52 @@ for (let i = 0; i < 256; i++) {
     LUT_C[i] = Math.max(0, Math.min(255, Math.round((i - 128) * 255 / 224 + 128)));
 }
 
-/** The atlas size and where it is drawn, for a w x h picture: fitted into AREA and MAX_VW x MAX_VH. */
+/**
+ * For a w x h picture: the layer (x, y, w, h: the whole map area), its frame (vw x vh, 544x240), the
+ * picture in the frame (pw x ph at px, py: the largest that fits at the picture's aspect, even sizes and
+ * places for the 4:2:0 chroma, centred) and where that shows on the map (sx, sy, sw, sh).
+ */
 function geometry(w, h) {
     const asp = w / h;
-    let rw = AREA.w, rh = Math.round(AREA.w / asp);
-    if (rh > AREA.h) { rh = AREA.h; rw = Math.round(AREA.h * asp); }
-    rw += rw & 1; rh += rh & 1;
-    const s = Math.min(1, MAX_VW / w, MAX_VH / h);
-    const vw = Math.max(64, Math.round(w * s) & ~3), vh = Math.max(32, Math.round(h * s) & ~1);
-    return { vw, vh, x: AREA.x + Math.round((AREA.w - rw) / 2), y: AREA.y + Math.round((AREA.h - rh) / 2), w: rw, h: rh };
+    let pw = Math.round(FRAME_H * asp), ph = FRAME_H;
+    if (pw > FRAME_W) { pw = FRAME_W; ph = Math.round(FRAME_W / asp); }
+    pw = Math.max(2, pw & ~1); ph = Math.max(2, ph & ~1);
+    const px = ((FRAME_W - pw) >> 1) & ~1, py = ((FRAME_H - ph) >> 1) & ~1;
+    const kx = AREA.w / FRAME_W, ky = AREA.h / FRAME_H;
+    return { vw: FRAME_W, vh: FRAME_H, x: AREA.x, y: AREA.y, w: AREA.w, h: AREA.h, pw, ph, px, py,
+        sx: AREA.x + px * kx, sy: AREA.y + py * ky, sw: pw * kx, sh: ph * ky };
+}
+
+/** A vw x vh atlas, black (full-range Y 0, neutral chroma) everywhere. */
+function blackAtlas(vw, vh) {
+    const b = Buffer.alloc(vw * vh * 3 / 2);
+    b.fill(128, vw * vh);
+    return b;
 }
 
 /**
- * I420 (f.w x f.h, limited range) -> the service's atlas (vw x vh, full range) in out (a Buffer of
- * vw*vh*3/2). Luma: the average of the 2x2 source pixels at each output pixel's place (an exact 2x2 box
- * for a 2x reduction); chroma: the nearest source sample.
+ * I420 (f.w x f.h, limited range) -> a vw x vh picture (full range) in the service's atlas in out. With
+ * at (a geometry()), the picture is pw x ph at px, py of a frame at.vw x at.vh (out: its atlas; the rest
+ * is left as it is: black from blackAtlas()); without, out is the picture's own vw*vh*3/2 atlas.
+ * Luma: the average of the 2x2 source pixels at each output pixel's place (an exact 2x2 box for a 2x
+ * reduction); chroma: the nearest source sample.
  */
-function toAtlas(f, vw, vh, out, maps) {
+function toAtlas(f, vw, vh, out, maps, at) {
     const sw = f.w, sh = f.h, src = f.yuv, cw = sw >> 1, ch = sh >> 1, us = sw * sh, vs = us + cw * ch;
     const m = maps && maps.key === sw + 'x' + sh + '>' + vw + 'x' + vh ? maps : mapsFor(sw, sh, vw, vh);
     const xm = m.xm, ym = m.ym, cxm = m.cxm, cym = m.cym;
+    const fw = at ? at.vw : vw, fh = at ? at.vh : vh, px = at ? at.px : 0, py = at ? at.py : 0;
     for (let j = 0; j < vh; j++) {
-        const r0 = ym[j] * sw, r1 = (ym[j] + 1 < sh ? ym[j] + 1 : ym[j]) * sw, o = j * vw;
+        const r0 = ym[j] * sw, r1 = (ym[j] + 1 < sh ? ym[j] + 1 : ym[j]) * sw, o = (py + j) * fw + px;
         for (let i = 0; i < vw; i++) {
             const x0 = xm[i], x1 = x0 + 1 < sw ? x0 + 1 : x0;
             out[o + i] = LUT_Y[(src[r0 + x0] + src[r0 + x1] + src[r1 + x0] + src[r1 + x1] + 2) >> 2];
         }
     }
-    const hw = vw >> 1, hh = vh >> 1, ys = vw * vh;
+    const hw = vw >> 1, hh = vh >> 1, ys = fw * fh, fhw = fw >> 1;
     for (let j = 0; j < hh; j++) {
-        const o = ys + j * vw, ur = us + cym[j] * cw, vr = vs + cym[j] * cw;
-        for (let i = 0; i < hw; i++) { const x = cxm[i]; out[o + i] = LUT_C[src[ur + x]]; out[o + hw + i] = LUT_C[src[vr + x]]; }
+        const o = ys + ((py >> 1) + j) * fw + (px >> 1), ur = us + cym[j] * cw, vr = vs + cym[j] * cw;
+        for (let i = 0; i < hw; i++) { const x = cxm[i]; out[o + i] = LUT_C[src[ur + x]]; out[o + fhw + i] = LUT_C[src[vr + x]]; }
     }
     return m;
 }
@@ -239,18 +264,25 @@ class ClusterOut {
         if (now - this.lastAt < 1000 / this.fps - 4) return false;
         try {
             const key = f.w + 'x' + f.h;
-            if (!this.ref || key !== this.key) {
-                if (this.ref) this._drop();
+            if (this.ref && key !== this.key) {
+                // a new picture size: the same layer and frame (always the whole map area), the picture
+                // placed again on black, so the map below is not let through for a moment
                 const g = geometry(f.w, f.h);
-                const ref = this.cr.video({ target: TARGET, klass: 'content', z: Z, x: g.x, y: g.y, w: g.w, h: g.h,
+                this.geo = g; this.key = key; this.maps = null;
+                this.atlas = blackAtlas(g.vw, g.vh);
+                this.log.info('cluster: the picture ' + g.pw + 'x' + g.ph + ' shown ' + g.sw + 'x' + g.sh + ' at ' + g.sx + ',' + g.sy);
+            }
+            if (!this.ref) {
+                const g = geometry(f.w, f.h);
+                const ref = this.cr.video({ target: TARGET, klass: 'content', z: Z, exclusive: EXCLUSIVE, x: g.x, y: g.y, w: g.w, h: g.h,
                     vw: g.vw, vh: g.vh, fps: FPS, stall_ms: STALL_MS, contend: true });
                 if (!ref) { this.log.warn('cluster: video layer refused by the client'); return false; }
                 this.ref = ref; this.geo = g; this.key = key;
-                this.atlas = Buffer.alloc(g.vw * g.vh * 3 / 2);
+                this.atlas = blackAtlas(g.vw, g.vh);
                 this.layerState = 'new'; this.layerReason = '';
-                this.log.info('cluster: video layer ' + g.vw + 'x' + g.vh + ' at ' + g.x + ',' + g.y + ' ' + g.w + 'x' + g.h + ' on the map');
+                this.log.info('cluster: video layer ' + g.vw + 'x' + g.vh + ' over the whole map (exclusive), the picture ' + g.pw + 'x' + g.ph + ' shown ' + g.sw + 'x' + g.sh + ' at ' + g.sx + ',' + g.sy);
             }
-            this.maps = toAtlas(f, this.geo.vw, this.geo.vh, this.atlas, this.maps);
+            this.maps = toAtlas(f, this.geo.pw, this.geo.ph, this.atlas, this.maps, this.geo);
             if (!this.cr.frame(this.ref, this.atlas, ++this.id)) return false;
             this.lastAt = now; this.sent++;
             return true;
@@ -307,7 +339,7 @@ class ClusterOut {
         if (ls === 'shown' || t.state === 'shown') {
             const g = this.geo;
             const low = this.budget && this.budget.cap < this.budget.max;
-            const text = 'Playing in the map area' + (g ? ' - ' + g.vw + 'x' + g.vh : '') + ' ' + this.fps + ' fps' + (low ? ' (link busy)' : '');
+            const text = 'Playing in the map area' + (g ? ' - ' + g.pw + 'x' + g.ph : '') + ' ' + this.fps + ' fps' + (low ? ' (link busy)' : '');
             // service 0.2.2: whether the cluster's renderer is drawing it; it asks again by itself
             if (t.rendering === 'checking') return { level: 'warn', text: text + ' - cluster not drawing it yet, asking again' };
             return { level: low ? 'warn' : 'ok', text: text + (t.rendering === 'verified' ? ' (drawn)' : '') };
@@ -321,4 +353,4 @@ class ClusterOut {
     }
 }
 
-module.exports = { ClusterOut, loadClient, toAtlas, geometry, fpsForBudget, trusted, TARGET, AREA, FPS, STALL_MS, Z };
+module.exports = { ClusterOut, loadClient, toAtlas, blackAtlas, geometry, fpsForBudget, trusted, TARGET, AREA, FPS, STALL_MS, Z, EXCLUSIVE };
