@@ -53,6 +53,16 @@
  * 0.4.3: the cluster screens of 0.4.2 (Full / Left / Right on the "panel" target) are gone: the cluster
  * picture is the map area only, as proven on the car, and the HUD. Never "alert", never the panel.
  *
+ * 0.4.5, the HUD says why it waits. Since cluster-render 0.2.0 a target the KOMBI parks behind the car's
+ * own HUD content is reported "parked (stock)" and, with hud_take_over_stock = 0 (the shipped default),
+ * stays there: the car's HUD content is in its slot whenever the HUD is on, so our layer never shows.
+ * Only the tool's own setting changes that (hud_take_over_stock = 1 in its cluster-render.local.conf,
+ * read here, never written); the status line names it. The HUD shares its scene id with the cluster
+ * panel: while another app (G's Dash's cluster skins) has a layer there the service keeps the HUD
+ * "waiting (scene id in use by another target)"; ours asks the service's status (at most every 3 s,
+ * only while waiting) to name the app. G's Dash 0.8.5 hides its skins when it sees our HUD layer, and
+ * the panel is let go 3 s later (its linger), so this is a short wait. Refusals read "Refused: reason".
+ *
  * Never throws into the player, never blocks. Node 8: no ?., ?? or object spread.
  */
 const fs = require('fs');
@@ -60,6 +70,10 @@ const path = require('path');
 
 const CLIENT = process.env.NG_CR_CLIENT || '/var/opt/cluster-render/current/cluster_render_client.js';
 const SOCK = process.env.NG_CR_SOCK || '/dev/shm/cluster-render/render.sock';
+// the tool's own settings for this unit (README "Configure"): read for hud_take_over_stock, never written
+const LOCAL_CONF = '/var/opt/cluster-render/cluster-render.local.conf';
+const ASK_MS = 3000;                      // while the HUD waits for the panel: the service's status at most this often
+const APP_NAMES = { ng_gsdash: "G's Dash cluster skins", ng_music: "G's Music", ng_tv: "G's TV" };
 const TESTING = !!(process.env.NG_CR_CLIENT || process.env.NG_CR_SOCK);
 
 const TARGET = 'map';                     // the cluster's map area (the default target)
@@ -216,6 +230,52 @@ class ClusterOut {
         this.budget = null;
         this.refused = '';
         this.sock = '';
+        this.others = null;       // 0.4.5: other apps' layers on the panel / HUD, from the last status asked
+        this.askAt = -1e15;
+        this.takeOver = null;     // 0.4.5: the tool's hud_take_over_stock (null: not read yet)
+        this.refusedReason = ''; this.toldConf = false;
+    }
+
+    /** 0.4.5: the tool's hud_take_over_stock: true / false (its local conf, else the shipped 0). */
+    _takeOver() {
+        if (this.takeOver !== null) return this.takeOver;
+        let v = false;
+        try {
+            const txt = fs.readFileSync(this.opts.conf || LOCAL_CONF, 'utf8');
+            const m = /^[ \t]*hud_take_over_stock[ \t]*=[ \t]*([^\s#]+)/m.exec(txt);
+            if (m) v = Number(m[1]) !== 0 && !isNaN(Number(m[1]));
+        } catch (e) { /* no local conf: the shipped default, 0 */ }
+        this.takeOver = v;
+        return v;
+    }
+
+    /** 0.4.5: while the HUD waits for its scene: ask the service's status (whose layers hold the panel). */
+    _ask() {
+        const t = this.target;
+        if (!this.cr || !this.ready || !this.ref || t.state !== 'waiting' || !/scene id/.test(t.reason)) return;
+        const now = this.now();
+        if (now - this.askAt < ASK_MS) return;
+        this.askAt = now;
+        try { if (typeof this.cr.status === 'function') this.cr.status(); } catch (e) { /* as before */ }
+    }
+
+    /** 0.4.5: other apps' drawn or waiting layers on the panel or the HUD, from a status text: [{ app, target, state }]. */
+    _readStatus(text) {
+        const out = [];
+        String(text || '').split('\n').forEach((l) => {
+            const m = /^layer (\d+) (\w+) of (\S+) on (\w+), (\w+) z (-?\d+): (\w+)/.exec(l);
+            if (!m || m[3] === this.app || (m[4] !== 'panel' && m[4] !== 'hud')) return;
+            if (!/^(shown|waiting|suspended)$/.test(m[7])) return;
+            if (!out.some((o) => o.app === m[3] && o.target === m[4])) out.push({ app: m[3], target: m[4], state: m[7] });
+        });
+        return out;
+    }
+
+    /** 0.4.5: whether the HUD is on but kept off the car's HUD (waiting, parked or refused). */
+    blocked(parked, playing) {
+        if (this.T.name !== 'hud' || !this.on) return false;
+        const s = this._hudStatus(parked, playing);
+        return /^(Waiting|Refused)/.test(s.text);
     }
 
     /** The toggle: on connects to the service (so its state shows), off drops everything and disconnects. */
@@ -265,6 +325,13 @@ class ClusterOut {
             this.target = { state: state || '', holder: holder || '', reason: reason || '', rendering: rendering };
             rendering = '';
         });
+        cr.on('status', (text) => {
+            if (this.cr !== cr) return;
+            const o = this._readStatus(text);
+            const was = JSON.stringify(this.others), now = JSON.stringify(o);
+            if (was !== now && o.length) this.log.info(this.tag + ': the HUD\'s scene is held by ' + o.map((x) => x.app + ' (' + x.target + ', ' + x.state + ')').join(', '));
+            this.others = o;
+        });
         cr.on('budget', (cap, max, reason) => {
             if (this.cr !== cr) return;
             this.budget = { cap, max, reason: reason || '' };
@@ -275,6 +342,7 @@ class ClusterOut {
         cr.on('refused', (op, ref, reason) => {
             if (this.cr !== cr) return;
             this.refused = (op || '?') + ': ' + (reason || '?');
+            this.refusedReason = reason || op || '?';
             this.log.warn(this.tag + ': refused ' + this.refused);
         });
         try { cr.connect(); } catch (e) { this.log.warn(this.tag + ': connect ' + e.message); }
@@ -285,6 +353,7 @@ class ClusterOut {
      * made with the first picture after a stop(). False when nothing was sent.
      */
     write(f) {
+        if (this.on && this.T.name === 'hud') this._ask();
         if (!this.on || !this.cr || !this.ready || !f || !f.yuv || f.w < 16 || f.h < 16 || (f.w & 1) || (f.h & 1)) return false;
         const now = this.now();
         if (now - this.lastAt < 1000 / this.fps - 4) return false;
@@ -321,6 +390,7 @@ class ClusterOut {
     _drop() {
         const ref = this.ref;
         this.ref = 0; this.kind = ''; this.key = ''; this.geo = null; this.layerState = ''; this.layerReason = ''; this.lastAt = -1e15;
+        this.refused = ''; this.refusedReason = ''; this.others = null;   // 0.4.5: a new layer starts clean
         if (ref && this.cr) { try { this.cr.drop(ref); } catch (e) { /* gone */ } }
     }
 
@@ -337,7 +407,8 @@ class ClusterOut {
         if (this.cr) { try { this.cr.close(); } catch (e) { /* gone */ } }
         this.cr = null; this.ready = false;
         this.target = { state: '', holder: '', reason: '', rendering: '' };
-        this.budget = null; this.refused = ''; this.fps = FPS;
+        this.budget = null; this.refused = ''; this.refusedReason = ''; this.fps = FPS;
+        this.others = null; this.askAt = -1e15; this.takeOver = null;
     }
 
     /** Whether the picture is in the cluster now. */
@@ -400,21 +471,35 @@ class ClusterOut {
         if (!parked) return { level: 'info', text: 'Ready - only when parked' + svc };
         if (!this.ref) return { level: 'info', text: (playing ? 'Starting...' : 'Ready - press Play') + svc };
         const t = this.target, ls = this.layerState;
-        if (this.refused && ls !== 'shown') return { level: 'bad', text: 'Refused (' + this.refused + ')' + svc };
-        if (ls === 'error') return { level: 'bad', text: 'Refused by the renderer' + (this.layerReason ? ' (' + this.layerReason + ')' : '') + svc };
-        if (t.state === 'unavailable') return { level: 'bad', text: 'HUD unavailable' + svc };
+        if (this.refused && ls !== 'shown') return { level: 'bad', text: 'Refused: ' + (this.refusedReason || this.refused) + svc };
+        if (ls === 'error') return { level: 'bad', text: 'Refused: ' + (this.layerReason || 'the renderer dropped the layer') + svc };
+        if (t.state === 'unavailable') return { level: 'bad', text: 'HUD unavailable' + (t.reason ? ' (' + t.reason + ')' : '') + svc };
         if (ls === 'shown' || t.state === 'shown') {
             const g = this.geo;
             const detail = ' on ' + this.T.area + (g ? ' - ' + g.sw + 'x' + g.sh : '') + ' ' + this.fps + ' fps';
             const level = t.rendering === 'checking' ? 'warn' : 'ok';
             return { level, text: 'Playing' + detail + svc };
         }
-        if (/scene id/.test(t.reason)) return { level: 'warn', text: 'HUD busy - another app uses the cluster panel (it shares the HUD\'s scene)' + svc };
-        if (t.state === 'parked' || t.state === 'waiting') return { level: 'warn', text: 'HUD busy - the car\'s own HUD content is in front' + svc };
-        if (ls === 'suspended') return { level: 'warn', text: 'Hidden by other HUD content' + svc };
+        // 0.4.5: why it waits, in words that say what to do
+        if (/scene id/.test(t.reason)) {
+            const o = (this.others || []).filter((x) => x.target === 'panel')[0] || (this.others || [])[0];
+            const who = o ? (APP_NAMES[o.app] || o.app) : '';
+            if (o && o.app === 'ng_gsdash') return { level: 'warn', text: 'Waiting - G\'s Dash cluster skins hold the HUD (they share its scene; they give way in a few seconds)' + svc };
+            if (who) return { level: 'warn', text: 'Waiting - ' + who + ' holds the cluster panel, which shares the HUD\'s scene' + svc };
+            return { level: 'warn', text: 'Waiting - another cluster panel layer holds the HUD\'s scene (let go a few seconds after it ends)' + svc };
+        }
+        if (t.state === 'parked' && t.holder === 'stock') {
+            if (this._takeOver()) return { level: 'warn', text: 'Waiting - taking the HUD over from the car\'s own HUD content' + svc };
+            if (!this.toldConf) { this.toldConf = true; this.log.warn(this.tag + ': parked behind the car\'s own HUD content; the Cluster renderer takes the HUD over only with hud_take_over_stock = 1 in ' + (this.opts.conf || LOCAL_CONF) + ' (then restart it)'); }
+            return { level: 'warn', text: 'Waiting - the car\'s own HUD content is in front (Cluster renderer hud_take_over_stock = 0: set it to 1 in its cluster-render.local.conf)' + svc };
+        }
+        if (t.state === 'parked' && t.holder === 'foreign') return { level: 'warn', text: 'Waiting - other content (a car message?) holds the HUD' + svc };
+        if (t.state === 'parked') return { level: 'warn', text: 'Waiting - parked behind the HUD\'s other content' + (t.reason ? ' (' + t.reason + ')' : '') + svc };
+        if (t.state === 'waiting') return { level: 'warn', text: 'Waiting - ' + (t.reason || 'the HUD is busy') + svc };
+        if (ls === 'suspended') return { level: 'warn', text: 'Waiting - hidden by other HUD content' + (this.layerReason ? ' (' + this.layerReason + ')' : '') + svc };
         if (ls === 'stalled') return { level: 'info', text: 'Waiting for pictures...' + svc };
         return { level: 'info', text: 'Asking for the HUD...' + svc };
     }
 }
 
-module.exports = { ClusterOut, loadClient, toAtlas, blackAtlas, geometry, fpsForBudget, trusted, TARGET, TARGETS, AREA, FPS, STALL_MS, Z, EXCLUSIVE };
+module.exports = { ClusterOut, LOCAL_CONF, loadClient, toAtlas, blackAtlas, geometry, fpsForBudget, trusted, TARGET, TARGETS, AREA, FPS, STALL_MS, Z, EXCLUSIVE };

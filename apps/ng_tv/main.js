@@ -60,6 +60,10 @@
  * cluster picture is dropped so the directions show there; the video keeps playing on this screen, and
  * the cluster picture comes back when the route ends. The status line names G's Dash's Cluster source
  * pick ("after TV: Logo", cluster_source.js shared in from G's Dash), what the cluster goes back to.
+ * 0.4.5, the HUD says why it waits (tv_cluster.js): behind the car's own HUD content (the Cluster
+ * renderer's hud_take_over_stock = 0, its default, never takes the HUD over), while another app's layer
+ * on the cluster panel holds the HUD's scene (named: "G's Dash cluster skins hold the HUD"), or
+ * "Refused: reason". The HUD button reads 'HUD waiting' then. Route guidance still never touches the HUD.
  * Every safety rule unchanged: the picture on the HUD and the cluster only through the parked gate (speed known and at
  * most 3 km/h, P, 2 s settled; dropped on the gear / speed signal itself), off while moving, one output
  * at a time, never the alert class, never 7702 / 7703. Without the Cluster renderer tool the button says
@@ -1041,8 +1045,9 @@ mgu.run({
                     cv.circle(px - 12, py, 4, c); cv.circle(px + 12, py, 4, c);
                 }],
                 // 0.4.2: the HUD, like Cluster (one tap, on / off shown); the glyph: the windscreen with the HUD's box in it
-                ['hud', settings.get('hud') ? 'HUD on' : 'HUD', () => toggleOut('hud'), (px, py) => {
-                    const c = settings.get('hud') ? (t.sel || t.accent) : t.text;
+                // 0.4.5: 'HUD waiting' while it is on but kept off the HUD (the status line says why)
+                ['hud', settings.get('hud') ? (hud.blocked(gateOpen, isPlay) ? 'HUD waiting' : 'HUD on') : 'HUD', () => toggleOut('hud'), (px, py) => {
+                    const c = settings.get('hud') ? (hud.blocked(gateOpen, isPlay) ? (t.warn || t.accent) : (t.sel || t.accent)) : t.text;
                     cv.line(px - 26, py + 11, px + 26, py + 11, 3, c); cv.line(px - 26, py + 11, px - 19, py - 12, 3, c);
                     cv.line(px + 26, py + 11, px + 19, py - 12, 3, c); cv.line(px - 19, py - 12, px + 19, py - 12, 3, c);
                     cv.strokeRoundRect(px - 9, py - 6, 18, 11, 3, 2, c);
