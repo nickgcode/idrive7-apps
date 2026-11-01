@@ -5,6 +5,11 @@
  * bar). Between the track and the progress bar: the track's synced lyrics (LRCLIB, lyrics.js) or a
  * visualizer coloured from the album art (Settings: Show).
  *
+ * The cluster (0.6.0, music_cluster.js, Settings: Cluster): while a track plays, its synced lyrics or a
+ * visualizer in the instrument cluster's centre map area, through the Cluster renderer tool (over
+ * Waze's map and G's Dash's logo, under G's TV; hidden while G's TV plays there or a route is guided;
+ * gone after 30 s of pause). Spotify is read every CLUSTER_POLL_MS for it while this screen is not up.
+ *
  * Source: the Spotify Web API (spotify.js) over mgu-uplink (mgu-store), so it controls whatever device
  * your account plays on - the phone that is connected to the car included. Player commands need
  * Spotify Premium. Sign-in: the not-connected screen (and the settings page's Sign in with phone)
@@ -38,6 +43,8 @@ const signinConfig = require('./signin_config');
 const qrcodegen = require('./qrcodegen');
 const LyricsLib = require('./lyrics');
 const { Canvas } = require('./kit/canvas');
+const MC = require('./music_cluster');
+const VIZ = require('./viz');
 const zlib = require('zlib');
 const WLOGO = require('./widget_logo');
 const Lyrics = LyricsLib.Lyrics;
@@ -55,9 +62,10 @@ const WASH = 0.2;                       // the artwork colour's wash over the pa
 const FRAME_MS = 1000 / 30;             // animation clock step: at most 30 different frames a second
 const LEAD_MS = 250;                    // a lyric line lights up this much before its time stamp
 const SCROLL_MS = 380;                  // the lyrics' scroll to the next line
-const VIZ_BARS = 38;
 const POLL_MS = 3000;                   // Spotify polled this often while the app is on screen (0.5.1: no setting)
 const WIDGET_POLL_MS = 5000;            // Spotify polled at most this often for the home-screen widget alone
+const CLUSTER_POLL_MS = 5000;           // ... for the cluster's picture alone, while a track plays (0.6.0)
+const CLUSTER_IDLE_MS = 15000;          // ... and while paused or nothing plays (the picture comes back on Play)
 const WIDGET_STEPS = 30;                // the big widget's progress bar moves in 1/30 steps (a new picture every ~7 s)
 const REPEAT_NEXT = { off: 'context', context: 'track', track: 'off' };
 const REPEAT_WORD = { off: 'off', context: 'all', track: 'one' };
@@ -322,13 +330,55 @@ mgu.run({
             polling = false;
             labels();
         }
+        // the cluster's picture (music_cluster.js): lyrics or the visualizer while a track plays
+        const mc = new MC.MusicCluster({ log, app: 'ng_spotify', Canvas });
+        const clusterOn = () => settings.get('cluster') === 'lyrics' || settings.get('cluster') === 'visualizer';
+        const clusterTick = () => {
+            const ok = status === 'ok' && !!pb;
+            const t = ok && pb.title && !pb.ad ? { uri: pb.uri, title: pb.title, artist: pb.artist, kind: pb.kind, duration: pb.duration, ad: pb.ad } : null;
+            const want = clusterOn() && t && settings.get('cluster') === 'lyrics' && pb.kind !== 'episode';
+            mc.update({ setting: settings.get('cluster'), ok, track: t, playing: !!(pb && pb.playing), pos: position(), posFn: () => position(),
+                lyrics: want ? lyr.get({ uri: pb.uri, title: pb.title, artist: pb.artist, artist1: pb.artist1, album: pb.album, duration: pb.duration }) : null,
+                palette: artPal, vizPalette: stageColours(ctx.theme()) });
+        };
+        setInterval(() => { try { clusterTick(); } catch (e) { log.warn('music cluster: ' + e.message); } }, 250);
+        process.once('exit', () => mc.close());
+        settings.onChange((k) => { if (k === 'cluster') { nextPoll = 0; clusterTick(); } });
+        // route guidance hides the cluster's picture, as G's Dash's logo (app.json "_optional" signals)
+        const GUIDE = [
+            ['de.bmw.infotainment.navigation.navigationstatus.NavigationStatus', '1', 'guidingState', 'nav'],
+            ['de.bmw.infotainment.a4a.carplay.CarPlayManager', 'CarPlayManagerInst1', 'projectedGuidanceActive', 'carplay'],
+            ['de.bmw.infotainment.sdi.aap.androidautoprojectedmanager.AndroidAutoProjectedManager', 'AndroidAutoProjectedManagerInst1', 'projectedGuidanceActive', 'aa'],
+        ];
+        if (ctx.signals && ctx.signals.watch) GUIDE.forEach((g) => {
+            const h = {};
+            h[g[2]] = (v) => mc.guidance(g[3], v);
+            try {
+                ctx.signals.watch(g[0], g[1], h, log, { pollMs: 10000 })
+                    .then((r) => log.info('guidance ' + g[3] + ': ' + (r && r.error ? 'unavailable (' + r.error + ')' : 'watched')), (e) => log.warn('guidance ' + g[3] + ': ' + e));
+            } catch (e) { log.warn('guidance ' + g[3] + ': ' + e.message); }
+        });
+        /** How often Spotify is read for the cluster alone (screen and widget not up): 0 = not. */
+        const clusterEvery = () => {
+            if (!clusterOn() || (status !== 'ok' && status !== 'idle')) return 0;
+            if (pb && pb.playing) {
+                // a poll just after the track ends, so the next track's lyrics are on time
+                const left = pb.duration ? pb.duration - position() : 1e9;
+                return Math.max(1000, Math.min(CLUSTER_POLL_MS, left + 600));
+            }
+            return CLUSTER_IDLE_MS;
+        };
         const every = () => POLL_MS;
         // a home-screen widget on show also needs the player's state, but no faster than every 5 s
         const widgetOn = () => !!(ctx.widget && typeof ctx.widget.active === 'function' && ctx.widget.active());
         setInterval(() => {
             const shown = ui.isVisible('MAIN') || ui.isVisible('MORE');
             const wOn = !shown && widgetOn();
-            if (Date.now() >= nextPoll && (shown || wOn || status === 'starting')) { nextPoll = Date.now() + (wOn ? Math.max(every(), WIDGET_POLL_MS) : every()); poll(); }
+            const cEvery = !shown && !wOn ? clusterEvery() : 0;
+            if (Date.now() >= nextPoll && (shown || wOn || cEvery || status === 'starting')) {
+                nextPoll = Date.now() + (shown ? every() : wOn ? Math.max(every(), WIDGET_POLL_MS) : cEvery || every());
+                poll();
+            }
             if (shown) qrStep();
         }, 500);
 
@@ -655,7 +705,7 @@ mgu.run({
         }
 
         /* ----- the stage: lyrics or the visualizer ----- */
-        const viz = { t: 0, e: 0, last: 0 };
+        const viz = VIZ.clock();
         /** What the stage shows now: 'lyrics' (synced), 'plain', 'viz' or '' (off). */
         function stageMode() {
             const want = settings.get('stage') || 'lyrics';
@@ -670,12 +720,7 @@ mgu.run({
             const m = stageMode();
             // the visualizer's clock runs while playing and eases to rest when paused (then frozen: the
             // frames repeat and aren't sent)
-            const dt = viz.last ? Math.min(0.1, Math.max(0, (now - viz.last) / 1000)) : 0;
-            viz.last = now;
-            const goal = pb && pb.playing && !scrub ? 1 : 0;
-            viz.e += (goal - viz.e) * Math.min(1, dt * 2.5);
-            if (Math.abs(goal - viz.e) < 0.004) viz.e = goal;
-            viz.t += dt * viz.e;
+            VIZ.step(viz, now, pb && pb.playing && !scrub ? 1 : 0);
             if (!m.mode || R.h < 60) return;
             if (m.mode === 'viz') drawViz(cv, t, R);
             else if (m.mode === 'lyrics') drawLyrics(cv, t, R, m.e.lines, pos);
@@ -688,23 +733,9 @@ mgu.run({
             while (p.length < 3) p.push(p.length ? G.mix(p[0], base[p.length], 0.45) : base[0]);
             return p;
         }
-        /**
-         * The visualizer: bars mirrored about the stage's middle, their heights a slow sum of waves (the
-         * app can't hear the music: Spotify's audio analysis isn't open to new apps), coloured across
-         * by the artwork's palette. ~40 rounded rects a frame.
-         */
+        /** The visualizer (viz.js, the same as in the cluster): bars mirrored about the stage's middle. */
         function drawViz(cv, t, R) {
-            const pal = stageColours(t), N = VIZ_BARS, gap = R.w / N, bw = Math.max(4, gap * 0.52), cy = R.y + R.h / 2, T = viz.t;
-            const rest = 0.07, amp = 0.82 * viz.e;
-            for (let i = 0; i < N; i++) {
-                const u = i / (N - 1);
-                const wv = 0.5 + 0.5 * (0.5 * Math.sin(T * 2.1 + i * 0.42) + 0.3 * Math.sin(T * 3.7 - i * 0.27 + 1.3) + 0.2 * Math.sin(T * 6.3 + i * 0.91 + 0.4));
-                const env = 0.45 + 0.55 * Math.sin(Math.PI * (0.1 + 0.8 * u));
-                const h = Math.max(bw, R.h * (rest + amp * wv * env));
-                const c = u < 0.5 ? G.mix(pal[0], pal[1], u * 2) : G.mix(pal[1], pal[2], (u - 0.5) * 2);
-                const x = R.x + i * gap + (gap - bw) / 2;
-                cv.roundRect(x, cy - h / 2, bw, h, bw / 2, G.withAlpha(c, 0.55 + 0.45 * wv * viz.e));
-            }
+            VIZ.draw(cv, R, viz, stageColours(t), { mix: G.mix, withAlpha: G.withAlpha });
         }
         /** Synced lyrics: the line playing large and bright in the middle, the ones around it fading. */
         function drawLyrics(cv, t, R, lines, pos) {
@@ -886,6 +917,7 @@ mgu.run({
         const SET_ROWS = [
             ['theme', 'Colours', (v) => THEME_NAME[v] || v],
             ['stage', 'Show', (v) => ({ lyrics: 'Lyrics (else visualizer)', visualizer: 'Visualizer', off: 'Nothing' })[v] || v],
+            ['cluster', 'Cluster (map area)', (v) => ({ lyrics: 'Lyrics + visualizer', visualizer: 'Visualizer only', off: 'Off' })[v] || v, () => mc.view()],
         ];
         function drawSettings(cv, t, A) {
             const on = t.accent2 || t.accent, hy = A.y, cyH = hy + HEAD_H / 2;
@@ -924,6 +956,11 @@ mgu.run({
                 plate(cv, t, rx, y, colW, rh, false, isDown(key));
                 cv.text(r[1].toUpperCase(), rx + 20, y + rh / 2 - 6, 15, t.dim, { font: 'bold', spacing: 1.5, literal: true });
                 cv.text(r[2](settings.get(r[0])), rx + 20, y + rh / 2 + 22, 24, t.text, { font: 'bold', literal: true });
+                if (r[3]) {
+                    // the row's live state (the cluster's), right-aligned before the arrow
+                    const sv = r[3](), sc = sv.kind === 'on' ? '#2fd27a' : sv.kind === 'error' || sv.kind === 'none' ? t.warn : t.dim;
+                    cv.text(sv.text, rx + colW - 52, y + rh / 2 + 20, 18, sc, { align: 'right', literal: true });
+                }
                 const ax = rx + colW - 28, ay2 = y + rh / 2;
                 cv.line(ax - 6, ay2 - 10, ax + 4, ay2, 2.5, t.dim);
                 cv.line(ax + 4, ay2, ax - 6, ay2 + 10, 2.5, t.dim);
