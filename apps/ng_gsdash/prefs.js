@@ -7,7 +7,7 @@
  *     settings for it (clusterSkin on by default, hudShift off by default; one on turned the other off):
  *     a value saved by 0.9.0 is moved over once (migrateDisplays).
  *   - favourite looks (saved as "favLooks", a comma list outside the settings list): starred on Theme, a
- *     tap on the gear or the speed on Drive switches to the next one. Looks that went drop out.
+ *     tap on the gear (0.11.0: not the speed) on Drive switches to the next one. Looks that went drop out.
  *   - the guards for that tap: a still tap only (never a swipe), and never while the shift lights build
  *     or flash.
  *
@@ -89,7 +89,27 @@ function nearShift(S) {
 const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 const inRect = (r, x, y) => !!r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
 
+/*
+ * Showcase background (0.11.0, setting "showcaseBg"): how bright the waves are, 15..100 % (100 the
+ * default), darkening the waves only (the car, the clock, the card and the logo stay as they are).
+ * Stepped with - / + on Options > Theme (BG_STEPS); anything else saved is clamped, not lost.
+ */
+const BG_KEY = 'showcaseBg', BG_MIN = 15, BG_MAX = 100, BG_DEFAULT = 100;
+const BG_STEPS = [15, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+function bgLevel(v) {
+    const n = typeof v === 'string' && v.trim() === '' ? NaN : Number(v);
+    if (v === null || v === undefined || !isFinite(n)) return BG_DEFAULT;
+    return Math.max(BG_MIN, Math.min(BG_MAX, Math.round(n)));
+}
+/** One step down (dir -1) or up (+1) from v along BG_STEPS (a value between steps goes to the next one that way); null at the end. */
+function bgStep(v, dir) {
+    const c = bgLevel(v);
+    const to = dir < 0 ? BG_STEPS.filter((s) => s < c).pop() : BG_STEPS.filter((s) => s > c)[0];
+    return to === undefined ? null : to;
+}
+
 module.exports = {
+    BG_KEY, BG_MIN, BG_MAX, BG_DEFAULT, BG_STEPS, bgLevel, bgStep,
     DISPLAYS, DISPLAY_IDS, DEFAULT_DISPLAY, OLD_KEYS, validDisplay, displayName, displayFrom, migrateDisplays,
     FAV_KEY, FAV_MIN, TOAST_MS, HINT, parseFavs, serializeFavs, toggleFav, nextFav, favToast,
     TAP_SLOP, stillTap, nearShift, overlaps, inRect,

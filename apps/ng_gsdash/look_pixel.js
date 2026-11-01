@@ -164,19 +164,24 @@ function radar(cv, S, x, y, s) {
     }
 }
 
-/** A stat bar (oil / coolant): label, 12 blocks filling to the ready point, the value and a tag. */
+/**
+ * A stat bar (oil / coolant): label, value, 12 blocks in temperature zones (0.11.0, lib.js TEMP_ZONES): dim
+ * blue / green / red blocks, lit to the value in the current zone's colour, and a tag (COLD / OK / HOT).
+ */
+const ZONES_PX = { cold: BLU, ok: GRN, hot: '#ff4a5c' };
+const ZONE_TAG = { cold: 'COLD', ok: 'OK', hot: 'HOT' };
 function stat(cv, S, x, y, w, label, v) {
-    const n = 12, ok = v.ok === true, f = isNum(v.f) ? clamp((v.f - 100) / Math.max(1, v.thr - 100), 0, 1) : 0;
+    const n = 12, zg = L.tempGauge(v, ZONES_PX, '#1d1a40', 0.3), c = zg.on;
     ptxt(cv, label, x, y, 3, DIM);
     const val = isNum(v.f) ? Math.round(v.f) + '°F' : '--';
-    ptxt(cv, val, x + w, y - 4, 4, ok ? WHITE : v.ok === false ? CYAN : DIM, { align: 'right' });
+    ptxt(cv, val, x + w, y - 4, 4, !c ? DIM : zg.zone === 'ok' ? WHITE : c, { align: 'right' });
     const by = y + 34, gap = 4, bw = Math.floor((w - gap * (n - 1)) / n);
     for (let i = 0; i < n; i++) {
-        const on = isNum(v.f) && (i + 0.5) / n <= f, bx = x + i * (bw + gap);
-        cv.fillRect(bx, by, bw, 16, on ? (ok ? GRN : BLU) : '#1d1a40');
-        if (on) cv.fillRect(bx, by, bw, 4, ok ? '#b6ffcf' : '#a8ccff');
+        const p = (i + 0.5) / n, on = c && p <= zg.pos, bx = x + i * (bw + gap);
+        cv.fillRect(bx, by, bw, 16, zg.seg(p));
+        if (on) cv.fillRect(bx, by, bw, 4, L.mix(c, '#ffffff', 0.6));
     }
-    if (v.ok === false || ok) ptxt(cv, ok ? 'OK' : 'COLD', x + w, by + 26, 3, ok ? GRN : CYAN, { align: 'right' });
+    if (c) ptxt(cv, ZONE_TAG[zg.zone], x + w, by + 26, 3, c, { align: 'right' });
 }
 
 module.exports = {

@@ -29,6 +29,9 @@ const { withAlpha, clamp } = G;
 const ART_ID = 1;                   // pixel image id (record.setImage)
 const ART_PX = 256;                 // the artwork's pixels (drawn up to ~240 logical)
 const POLL_MS = 3000;               // GET /v1/me/player while shown
+const CTRL_MIN = 96, CTRL_MAX = 120, CTRL_GAP = 24;   // the controls' targets: width / height, the gap between (0.11.0)
+const SEEK_H = 6;                   // the seek bar's thickness
+const PANEL_SPREAD = 10;            // Drive / G-force panel: the controls this much further apart than 0.10.0's boxes
 
 function fmt(ms) {
     if (!(ms >= 0)) return '-:--';
@@ -83,9 +86,9 @@ function fromPlayer(j) {
     return p;
 }
 
-/* glyphs (as G's Music) */
-function playGlyph(cv, x, y, s, c) { cv.quad([[x + s * 0.18, y], [x + s * 0.18, y + s], [x + s, y + s / 2], [x + s, y + s / 2]], c); }
-function pauseGlyph(cv, x, y, s, c) { cv.roundRect(x + s * 0.12, y, s * 0.28, s, 3, c); cv.roundRect(x + s * 0.6, y, s * 0.28, s, 3, c); }
+/* glyphs, centred on (cx, cy), about s across */
+function playGlyph(cv, cx, cy, s, c) { cv.quad([[cx - s * 0.3, cy - s * 0.5], [cx - s * 0.3, cy + s * 0.5], [cx + s * 0.52, cy], [cx + s * 0.52, cy]], c); }
+function pauseGlyph(cv, cx, cy, s, c) { cv.roundRect(cx - s * 0.38, cy - s * 0.48, s * 0.27, s * 0.96, 3, c); cv.roundRect(cx + s * 0.11, cy - s * 0.48, s * 0.27, s * 0.96, 3, c); }
 function prevGlyph(cv, cx, cy, s, c) {
     cv.roundRect(cx - s * 0.5, cy - s * 0.42, s * 0.14, s * 0.84, 2, c);
     cv.quad([[cx + s * 0.45, cy - s * 0.42], [cx + s * 0.45, cy + s * 0.42], [cx - s * 0.32, cy], [cx - s * 0.32, cy]], c);
@@ -93,6 +96,14 @@ function prevGlyph(cv, cx, cy, s, c) {
 function nextGlyph(cv, cx, cy, s, c) {
     cv.roundRect(cx + s * 0.36, cy - s * 0.42, s * 0.14, s * 0.84, 2, c);
     cv.quad([[cx - s * 0.45, cy - s * 0.42], [cx - s * 0.45, cy + s * 0.42], [cx + s * 0.32, cy], [cx + s * 0.32, cy]], c);
+}
+/** A disc for the Pixel look: stacked rows of u px (no smooth curve). */
+function pxDisc(cv, cx, cy, r, c, u) {
+    u = u || 4;
+    for (let y = -r; y < r; y += u) {
+        const hw = Math.floor(Math.sqrt(Math.max(0, r * r - (y + u / 2) * (y + u / 2))) / u) * u;
+        if (hw > 0) cv.fillRect(Math.round(cx - hw), Math.round(cy + y), hw * 2, u, c);
+    }
 }
 function noteGlyph(cv, cx, cy, s, c) {
     cv.circle(cx - s * 0.18, cy + s * 0.3, s * 0.16, c);
@@ -273,7 +284,7 @@ class Music {
 
     _press(key, fn) { return () => { this.downKey = key; this.downAt = Date.now(); return fn(); }; }
     _isDown(key) { return this.downKey === key && Date.now() - this.downAt < 220; }
-    /** A touch button: the look's own card style, a finger's slop around it (own mode only). */
+    /** A touch button: the look's own card style, a finger's slop around it (own mode only). The Spotify page's buttons. */
     _button(cv, t, lk, key, x, y, w, h, fn) {
         const down = this._isDown(key), r = lk.ui.radius;
         if (lk.card) lk.card(cv, t, x, y, w, h, down);
@@ -283,10 +294,90 @@ class Music {
         }
         if (cv.own && cv.target) cv.target(x - 6, y - 6, w + 12, h + 12, this._press(key, fn), key, r);
     }
+    /** A borderless pill with a label (the panel's Sign in / Try again): soft fill, a deeper one pressed. */
+    _pill(cv, t, lk, key, x, y, w, h, label, fn) {
+        const down = this._isDown(key), acc = t.accent2 || t.accent, u = lk.ui, px = lk.id === 'pixel';
+        const r = px ? 0 : h / 2, c = withAlpha(acc, down ? 0.4 : 0.22);
+        if (px) cv.fillRect(x, y, w, h, c); else cv.roundRect(x, y, w, h, r, c);
+        cv.text(u.upper ? String(label).toUpperCase() : label, x + w / 2, y + h / 2 + 8, 22, t.text,
+            { align: 'center', font: u.lbl || u.txt, spacing: u.upper ? u.spacing : 0, literal: true });
+        if (cv.own && cv.target) cv.target(x, y, w, h, this._press(key, fn), key, r, { quiet: true });
+    }
+
+    /**
+     * Previous / play-pause / next (0.11.0): no boxes. Each target 96..120 px wide, the row's height (>= 96),
+     * >= 24 px apart; play / pause a filled accent circle; pressed: a soft disc behind the glyph (Pixel: a
+     * stepped one), so the targets are quiet (no kit flash, a round controller ring). R: the row
+     * { x, y, w, h }; o.step: the spacing wanted. Returns the target rects.
+     */
+    controls(cv, t, lk, R, o) {
+        o = o || {};
+        const th = Math.max(CTRL_MIN, R.h), want = o.step || 150;
+        const tw = clamp(Math.min((R.w - 2 * CTRL_GAP) / 3, want - CTRL_GAP), CTRL_MIN, CTRL_MAX);
+        const step = Math.max(tw + CTRL_GAP, Math.min((R.w - tw) / 2, want)), cx = R.x + R.w / 2, cy = R.y + R.h / 2;
+        return this._controlsAt(cv, t, lk, [cx - step, cx, cx + step], cy, { glyph: o.glyph || 34, play: o.play || 36, tw: tw, th: th });
+    }
+    /** The three controls drawn at the centres xs (prev, play, next) on row cy; o: glyph, play (radius), tw x th targets. */
+    _controlsAt(cv, t, lk, xs, cy, o) {
+        const pb = this.pb, acc = t.accent2 || t.accent, px = lk.id === 'pixel', ink = t.selText || '#000000', gc = pb ? t.text : t.dim;
+        const gs = o.glyph, pr = o.play, tw = Math.min(CTRL_MAX, o.tw), th = o.th, disc = Math.max(pr + 8, gs * 1.25);
+        const out = [];
+        [['sp:prev', () => this.skip(-1), -1], ['sp:play', () => this.togglePlay(), 0], ['sp:next', () => this.skip(1), 1]].forEach((b, i) => {
+            const mx = xs[i], down = this._isDown(b[0]);
+            if (down) { if (px) pxDisc(cv, mx, cy, Math.round(disc), withAlpha(t.text, 0.16), 6); else cv.circle(mx, cy, disc, withAlpha(t.text, 0.14)); }
+            if (b[2] === 0) {
+                const r = down ? pr * 0.92 : pr;
+                if (px) pxDisc(cv, mx, cy, Math.round(r + 2), acc, 4); else cv.circle(mx, cy, r, acc);
+                if (pb && pb.playing) pauseGlyph(cv, mx, cy, r * 0.82, ink); else playGlyph(cv, mx + 2, cy, r * 0.86, ink);
+            } else {
+                const s = down ? gs * 0.92 : gs, c = down ? acc : gc;
+                if (b[2] < 0) prevGlyph(cv, mx, cy, s, c); else nextGlyph(cv, mx, cy, s, c);
+            }
+            // a round target: quiet (no kit press flash; the controller's ring a circle)
+            const T = { x: mx - tw / 2, y: cy - th / 2, w: tw, h: th, key: b[0] };
+            if (cv.own && cv.target) cv.target(T.x, T.y, T.w, T.h, this._press(b[0], b[1]), b[0], Math.min(tw, th) / 2, { quiet: true });
+            out.push(T);
+        });
+        this.ctrl = out;
+        return out;
+    }
+
+    /** The seek bar (6 px, a small knob; Pixel: square) with the times at its ends, y its middle; the finger's band (own mode). */
+    seek(cv, t, lk, x, y, w) {
+        const pb = this.pb, acc = t.accent2 || t.accent, u = lk.ui, tf = { font: u.num || 'num', literal: true };
+        const dur = pb ? pb.duration || 0 : 0, pos = this.scrub && dur ? this.scrub.f * dur : this.position(), f = dur ? clamp(pos / dur, 0, 1) : 0;
+        const ts = 17, lw = cv.textWidth('00:00', ts, tf) + 12, rw = cv.textWidth('-00:00', ts, tf) + 12;
+        const bx = x + lw, bw = Math.max(20, w - lw - rw), th = SEEK_H, px = lk.id === 'pixel';
+        if (px) {
+            cv.fillRect(bx, y - th / 2, bw, th, t.track || withAlpha('#ffffff', 0.18));
+            if (f > 0) cv.fillRect(bx, y - th / 2, Math.round(bw * f), th, pb && pb.playing ? acc : t.dim);
+            if (dur) cv.fillRect(Math.round(bx + bw * f) - 6, y - 8, 12, 16, '#ffffff');
+        } else {
+            cv.roundRect(bx, y - th / 2, bw, th, th / 2, t.track || withAlpha('#ffffff', 0.18));
+            if (f > 0) cv.roundRect(bx, y - th / 2, Math.max(th, bw * f), th, th / 2, pb && pb.playing ? acc : t.dim);
+            if (dur) cv.circle(bx + bw * f, y, this.scrub ? 14 : 9, '#ffffff');
+        }
+        this.seekRect = { x: bx, y: y - th / 2, w: bw, h: th };
+        if (dur) {
+            cv.text(fmt(pos), x, y + 6, ts, t.dim, tf);
+            cv.text('-' + fmt(dur - pos), x + w, y + 6, ts, t.dim, Object.assign({ align: 'right' }, tf));
+            if (cv.own) this.band = { x: bx, w: bw, y0: y - 28, y1: y + 28 };
+        }
+    }
+
+    /** What the header's right side says: Playing / Paused and the device, the device dropped when it doesn't fit. */
+    _state(cv, lk, size, room) {
+        const pb = this.pb, u = lk.ui;
+        if (!pb) return '';
+        const s0 = pb.playing ? 'Playing' : 'Paused', s1 = pb.device ? s0 + ' · ' + pb.device : s0;
+        const o = { font: u.lbl || u.txt, spacing: u.upper ? u.spacing : 0, literal: true }, up = (q) => (u.upper ? q.toUpperCase() : q);
+        return cv.textWidth(up(s1), size, o) <= room ? s1 : s0;
+    }
 
     /**
      * The panel in R ({ x, y, w, h }, page px), the G button's rect g kept clear. lk: the look (ui
-     * fonts, card style, lk.panelPlate for its own plate).
+     * fonts, card style, lk.panelPlate for its own plate). 0.11.0: the layout as before (compact), the
+     * controls without boxes (glyphs a little further apart, generous invisible targets), a 6 px bar.
      */
     panel(cv, S, lk, R, g) {
         const t = S.t, u = lk.ui, acc = t.accent2 || t.accent, own = !!cv.own;
@@ -296,7 +387,7 @@ class Music {
             cv.roundRect(R.x, R.y, R.w, R.h, u.radius, withAlpha('#ffffff', 0.035));
             cv.strokeRoundRect(R.x, R.y, R.w, R.h, u.radius, 1, withAlpha('#ffffff', 0.12));
         }
-        this.band = null;
+        this.band = null; this.ctrl = null; this.seekRect = null;
         const pad = 16, x = R.x + pad, y = R.y + pad, w = R.w - 2 * pad, h = R.h - 2 * pad;
         const pb = this.pb, st = this.status, hasTrack = !!pb && this.connected();
         const top = y + 30;
@@ -348,18 +439,25 @@ class Music {
             if (!own) return;
             const bw = cR - cx0, bh = short ? cH : Math.min(cH + 20, cY + cH - bY), by = cY + cH - bh;
             const signIn = st === 'noauth' || st === 'reauth';
-            this._button(cv, t, lk, signIn ? 'sp:signin' : 'sp:retry', cx0, by, bw, bh, signIn ? () => this.o.openPage() : () => { this.nextPoll = 0; return this.poll(); });
-            lbl(signIn ? 'Sign in with phone' : 'Try again', cx0 + bw / 2, by + bh / 2 + 8, 22, t.text, { align: 'center' });
+            this._pill(cv, t, lk, signIn ? 'sp:signin' : 'sp:retry', cx0, by, bw, bh, signIn ? 'Sign in with phone' : 'Try again',
+                signIn ? () => this.o.openPage() : () => { this.nextPoll = 0; return this.poll(); });
             return;
         }
         // progress: the knob follows a dragging finger (touch); times under the bar (inline when short)
         const dur = pb ? pb.duration || 0 : 0, pos = this.scrub && dur ? this.scrub.f * dur : this.position();
-        const f = dur ? clamp(pos / dur, 0, 1) : 0, th = 8;
+        const f = dur ? clamp(pos / dur, 0, 1) : 0, th = SEEK_H, pxl = lk.id === 'pixel';
         const tf = { font: u.num || 'num', literal: true };
         const bx = short ? cx0 + 66 : cx0 + 6, bw = short ? (x + w) - 74 - bx : (x + w) - 6 - bx, by = short ? bY + 6 : bY + 12;
-        cv.roundRect(bx, by, bw, th, th / 2, t.track || withAlpha('#ffffff', 0.15));
-        if (f > 0) cv.roundRect(bx, by, Math.max(th, bw * f), th, th / 2, pb && pb.playing ? acc : t.dim);
-        if (dur) cv.circle(bx + bw * f, by + th / 2, this.scrub ? 17 : 11, this.scrub ? acc : '#ffffff');
+        if (pxl) {
+            cv.fillRect(bx, by, bw, th, t.track || withAlpha('#ffffff', 0.15));
+            if (f > 0) cv.fillRect(bx, by, Math.round(bw * f), th, pb && pb.playing ? acc : t.dim);
+            if (dur) cv.fillRect(Math.round(bx + bw * f) - 6, by + th / 2 - 8, 12, 16, this.scrub ? acc : '#ffffff');
+        } else {
+            cv.roundRect(bx, by, bw, th, th / 2, t.track || withAlpha('#ffffff', 0.15));
+            if (f > 0) cv.roundRect(bx, by, Math.max(th, bw * f), th, th / 2, pb && pb.playing ? acc : t.dim);
+            if (dur) cv.circle(bx + bw * f, by + th / 2, this.scrub ? 15 : 9, this.scrub ? acc : '#ffffff');
+        }
+        this.seekRect = { x: bx, y: by, w: bw, h: th };
         if (dur) {
             if (short) {
                 cv.text(fmt(pos), bx - 16, by + 11, 18, t.dim, Object.assign({ align: 'right' }, tf));
@@ -370,21 +468,46 @@ class Music {
             }
             if (own) this.band = { x: bx, w: bw, y0: by - 26, y1: Math.min(cY - 2, by + 34) };
         }
-        // previous, play / pause, next
-        const gap = 12, cw = (cR - cx0 - gap * 2) / 3;
-        const gc = pb ? t.text : t.dim, gs = Math.min(40, cH * 0.46);
-        [['sp:prev', () => this.skip(-1)], ['sp:play', () => this.togglePlay()], ['sp:next', () => this.skip(1)]].forEach((b, i) => {
-            const bx2 = cx0 + i * (cw + gap), mx = bx2 + cw / 2, my = cY + cH / 2;
-            this._button(cv, t, lk, b[0], bx2, cY, cw, cH, b[1]);
-            if (i === 0) prevGlyph(cv, mx, my, gs, gc);
-            else if (i === 2) nextGlyph(cv, mx, my, gs, gc);
-            else {
-                cv.circle(mx, my, gs * 0.95, acc);
-                const ink = t.selText || '#000000';
-                if (pb && pb.playing) pauseGlyph(cv, mx - gs * 0.38, my - gs * 0.38, gs * 0.76, ink);
-                else playGlyph(cv, mx - gs * 0.34, my - gs * 0.4, gs * 0.8, ink);
-            }
+        // previous, play / pause, next: where the three boxes were (0.10.0: thirds of the row, 12 apart), now
+        // without boxes, the glyphs PANEL_SPREAD further apart than the boxes' middles were; the targets as
+        // wide as the row allows (invisible, the row's height, 96 at least)
+        const gap = 12, cw = (cR - cx0 - gap * 2) / 3, gs = Math.min(40, cH * 0.46);
+        const step = cw + gap + PANEL_SPREAD, mid = cx0 + (cR - cx0) / 2, my = cY + cH / 2;
+        this._controlsAt(cv, t, lk, [mid - step, mid, mid + step], my, {
+            glyph: gs, play: gs * 0.95, tw: Math.min(step - 4, Math.max(CTRL_MIN, cw + gap)), th: Math.max(CTRL_MIN, cH + 12),
         });
+    }
+
+    /**
+     * The Showcase's now-playing card (0.11.0) in R: frosted, no hard border; the art, SPOTIFY and the
+     * state, title and artist, the seek bar, the controls. White text over any look's waves.
+     */
+    card(cv, S, lk, R) {
+        const t0 = S.t, u = lk.ui, px = lk.id === 'pixel', white = '#ffffff', acc = t0.accent2 || t0.accent;
+        const t = Object.assign({}, t0, { text: white, dim: withAlpha(white, 0.65) });
+        this.band = null; this.ctrl = null; this.seekRect = null;
+        const rad = px ? 0 : Math.max(14, u.radius);
+        if (px) { cv.fillRect(R.x, R.y, R.w, R.h, withAlpha('#05060c', 0.62)); cv.fillRect(R.x, R.y, R.w, 4, withAlpha(white, 0.25)); }
+        else { cv.roundRect(R.x, R.y, R.w, R.h, rad, withAlpha('#000000', 0.42)); cv.strokeRoundRect(R.x, R.y, R.w, R.h, rad, 1, withAlpha(white, 0.08)); }
+        const pb = this.pb, pad = 20, x = R.x + pad, w = R.w - 2 * pad, s = 128, ay = R.y + pad;
+        if (this.artReady) cv.image(ART_ID, x, ay, s, s);
+        else noteGlyph(cv, x + s / 2, ay + s / 2, s * 0.42, withAlpha(white, 0.3));
+        const tx = x + s + 18, tw = x + w - tx;
+        const lo = { font: u.lbl || u.txt, spacing: u.upper ? u.spacing : 0, literal: true }, up = (q) => (u.upper ? q.toUpperCase() : q);
+        cv.text(up('Spotify'), tx, ay + 16, 15, acc, lo);
+        const stat = this._state(cv, lk, 15, tw - cv.textWidth(up('Spotify'), 15, lo) - 18);
+        if (stat) cv.text(up(stat), x + w, ay + 16, 15, withAlpha(white, 0.6), Object.assign({ align: 'right' }, lo));
+        cv.text(fit(cv, pb.ad ? 'Advertisement' : pb.title || 'Unknown track', 30, tw, { font: 'bold' }), tx, ay + 64, 30, white, { font: 'bold', literal: true });
+        if (pb.artist) cv.text(fit(cv, pb.artist, 21, tw), tx, ay + 96, 21, withAlpha(white, 0.8), { literal: true });
+        const sY = ay + s + 28;
+        this.seek(cv, t, lk, x, sY, w);
+        const cY = sY + 22, cH = Math.max(CTRL_MIN, R.y + R.h - 6 - cY);
+        if (this.toast && Date.now() < this.toast.until) {
+            const ty = ay + s - 34;
+            cv.roundRect(x, ty, w, 34, 17, '#000000e0');
+            cv.text(fit(cv, this.toast.text, 18, w - 28), x + w / 2, ty + 23, 18, white, { align: 'center', literal: true });
+        }
+        this.controls(cv, t, lk, { x: x, y: cY, w: w, h: cH }, { step: 140 });
     }
 
     /**

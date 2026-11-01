@@ -138,12 +138,24 @@ function glass(cv, x, y, w, h, r, lit) {
     cv.gradientRect(x + r, y, w - 2 * r, 1, [[0, withAlpha('#ffffff', 0)], [0.5, withAlpha('#ffffff', 0.35)], [1, withAlpha('#ffffff', 0)]]);
 }
 
+/**
+ * Oil / coolant as a glowing line (0.11.0): the track in faint temperature zones (lib.js TEMP_ZONES: blue /
+ * green / red), lit to the value in the current zone's colour with a glow, a white dot at the value.
+ */
+const ZONES_LU = { cold: BLUE, ok: '#43e6a0', hot: '#ff4d5e' };
 function tempLine(cv, S, x, y, w, label, v) {
-    const ok = v.ok === true, f = isNum(v.f) ? clamp((v.f - 100) / Math.max(1, v.thr - 100), 0, 1) : 0, c = ok ? '#43e6a0' : BLUE;
+    const zg = L.tempGauge(v, ZONES_LU, '#141c33', 0.38), mk = L.zoneMarks(v), c = zg.on;
     cv.text(label, x, y, 15, DIM, { font: TXT, spacing: 4, literal: true });
-    cv.text(isNum(v.f) ? Math.round(v.f) + '°F' : '--', x + w, y + 2, 24, ok ? WHITE : v.ok === false ? ICE : DIM, { align: 'right', font: NUM, literal: true });
-    cv.roundRect(x, y + 14, w, 4, 2, '#141c33');
-    if (f > 0) { cv.roundRect(x, y + 11, w * f, 10, 5, withAlpha(c, 0.18)); cv.roundRect(x, y + 14, w * f, 4, 2, c); }
+    cv.text(isNum(v.f) ? Math.round(v.f) + '°F' : '--', x + w, y + 2, 24, !c ? DIM : zg.zone === 'ok' ? WHITE : c, { align: 'right', font: NUM, literal: true });
+    [[0, mk[0], 'cold'], [mk[0], mk[1], 'ok'], [mk[1], 1, 'hot']].forEach((z, i) => {
+        const a = x + w * z[0] + (i ? 2 : 0), b = x + w * z[1] - (i < 2 ? 2 : 0);
+        cv.roundRect(a, y + 14, b - a, 4, 2, L.mix('#141c33', zg.C[z[2]], 0.38));
+    });
+    const f = zg.pos;
+    if (c && f > 0) {
+        cv.roundRect(x, y + 11, w * f, 10, 5, withAlpha(c, 0.18)); cv.roundRect(x, y + 14, w * f, 4, 2, c);
+        cv.circle(x + w * f, y + 16, 7, withAlpha(c, 0.35)); cv.circle(x + w * f, y + 16, 4, WHITE);
+    }
 }
 
 function gmeter(cv, S, cx, cy, r) {

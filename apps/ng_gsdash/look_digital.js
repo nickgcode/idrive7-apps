@@ -66,15 +66,14 @@ function dots(cv, S, cx, cy, step) {
     }
 }
 
+/** Oil / coolant (0.11.0): the value, and 20 bars in temperature zones (lib.js TEMP_ZONES): faint blue / green / red, lit to the value in the zone's colour. */
+const ZONES_D = { cold: '#3fb4ff', ok: '#4af28a', hot: RED };
 function fluid(cv, x, y, w, label, v) {
-    const n = 20, gap = 4, bw = (w - gap * (n - 1)) / n;
-    const f = isNum(v.f) ? clamp((v.f - 60) / Math.max(1, v.thr + 40 - 60), 0, 1) : 0, at = (v.thr - 60) / Math.max(1, v.thr + 40 - 60);
+    const n = 20, gap = 4, bw = (w - gap * (n - 1)) / n, zg = L.tempGauge(v, ZONES_D, '#0b1513', 0.3);
     cv.text(label, x, y - 16, 20, DIMV, { font: TXT, literal: true });
-    seg(cv, isNum(v.f) ? pad(String(Math.round(v.f)), 3) : '!--', x + w, y - 12, 38, v.ok === false ? AMB : VFD);
-    for (let i = 0; i < n; i++) {
-        const on = isNum(v.f) && (i + 0.5) / n <= f;
-        cv.fillRect(x + i * (bw + gap), y, bw, 18, on ? ((i + 0.5) / n < at ? AMB : VFD) : GHOST);
-    }
+    seg(cv, isNum(v.f) ? pad(String(Math.round(v.f)), 3) : '!--', x + w, y - 12, 38, zg.on || DIMV);
+    for (let i = 0; i < n; i++) cv.fillRect(x + i * (bw + gap), y, bw, 18, zg.seg((i + 0.5) / n));
+    if (zg.zone) cv.fillRect(x + zg.pos * w - 1.5, y - 4, 3, 26, '#e8fff8');
 }
 
 module.exports = {

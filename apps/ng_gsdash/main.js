@@ -11,9 +11,10 @@
  *     (car.js), shown by every look (Eco Pro, Comfort, Comfort+, Sport, Sport+, Individual)
  *   - shift lights over the last 2000 rpm before your shift point, gear (from the gearbox, or learned
  *     from rpm / speed when the car sends none), rpm, speed, a live g-meter with session peaks
- *     (accel / brake / lateral), oil and coolant warm-up state; always mph and degrees F (green = ready)
+ *     (accel / brake / lateral), oil and coolant in colour zones (0.11.0, lib.js TEMP_ZONES: blue cold,
+     green normal, red too hot); always mph and degrees F
  *   - looks (setting "look", look_*.js): each its own layout, type, gauges and tab style -
- *     M Style (the default), GT, Digital '84, Sim Racing, Lumen, Pixel (0.7.0). 0.9.0 took Simple, Heritage
+ *     M Style (the default; 0.11.0: Carbon Grid), GT, Digital '84, Sim Racing, Lumen, Pixel (0.7.0). 0.9.0 took Simple, Heritage
  *     and Flight out: a saved one of those opens as M Style (migrated at start)
  *   - setting "panel": Spotify instead of the g-meter (music.js, G's Music's code shared in by the
  *     build): what plays, art, previous / play-pause / next, a bar to tap or drag; its own QR sign-in
@@ -45,8 +46,17 @@
  *     tool's patch service: off unless the tool is installed and the user turns it on (with a
  *     confirmation); G's Dash stores nothing for it.
  *   - favourite looks (0.10.0, prefs.js; saved as "favLooks"): a star on each Theme card; with two or
- *     more, a tap on the gear or the speed on Drive switches to the next one (a toast says which). Not on a
+ *     more, a tap on the gear (0.11.0: the gear only) on Drive switches to the next one (a toast says which). Not on a
  *     swipe or a moving finger, never while the shift lights build or flash. Looks that went drop out.
+ *   - Showcase (0.11.0, hub.js): the look's own flowing waves (waves.js, drawn here, no picture files), the car
+ *     on a soft floor shadow, a big clock and the date (or, setting "showcase": Spotify while it has a track,
+ *     the frosted now-playing card under a smaller clock), the G mark and the logo straight on the waves.
+ *     showcase_car.png / showcase_logo.png are shown as they are: pictures.js scales them smoothly, bleeds
+ *     their edges (no fringes) and, where the renderer shows RGBA opaque (an upstream one), composites them
+ *     over the waves itself (kit Recorder.pictures says which path).
+ *   - Spotify's controls (0.11.0, music.js): no boxes; 96-120 px targets 24 px apart or more, a filled
+ *     play / pause circle, a soft disc pressed (stepped on Pixel), quiet targets (no kit press flash, a
+ *     round controller ring); a 6 px seek bar with its times.
  *   - every clock H:MM with a colon (0.10.0, clock.js): Showcase's 12-hour clock from the head unit's
  *     clock in its own zone (the car keeps it set); a car time once a signal for it is known (Diagnostics
  *     lists the catalog's time / date fields). The session clocks are stopwatches: m:ss.t.
@@ -80,6 +90,8 @@ const fs = require('fs');
 const path = require('path');
 const record = require('./kit/record');
 const PNG = require('./kit/png');
+const { Waves, W: WAVE_W, base: waveBase } = require('./waves');
+const { Pictures } = require('./pictures');
 const HUB = require('./hub');
 const LOGO = require('./widget_logo');
 const L = require('./lib');
@@ -103,13 +115,13 @@ const lookOf = (id) => LOOKS.find((l) => l.id === id) || LOOKS.find((l) => l.id 
 const MPH = 1.609344;
 const TRAIL_MS = 3000;
 const OIL_READY_F = 194, COOLANT_READY_F = 176, HYST_F = 4;
-const VERSION = '0.10.0';
+const VERSION = '0.11.0';
 // Warm-up: the rev limit is COLD_RPM at or below COLD_F oil, rising (250 rpm steps) to WARM_REDLINE at
 // the "oil temp for full revs" setting. Auto-jump: AUTO_MS after READY it opens Drive.
 const COLD_RPM = 4000, COLD_F = 104, WARM_REDLINE = 6000, OIL_FULL_F = 180, AUTO_MS = 5000;
 const HIST_MS = 20000, HIST_N = 80, ENV_N = 48;                  // G-force: last 20 s, the peak envelope
 const SWIPE_START = 40, SWIPE_GO = 110, HOLD_MS = 700, HOLD_SLOP = 24;
-const IMG = { car: 0x6701, logo: 0x6702, card: 0x6710 };        // record.setImage ids (cards: + look index)
+const IMG = { car: 0x6701, logo: 0x6702, card: 0x6710, wave: 0x6740 };   // record.setImage ids (cards: + look index; wave: Showcase)
 const toF = (c) => (L.isNum(c) ? c * 9 / 5 + 32 : c);
 
 // content box: full screen from page y BOX_OWN to the page's bottom (G.pageBottom), else BOX_STD + BOX_H.
@@ -328,10 +340,12 @@ mgu.run({
         let ask = null;
         const ASK_MS = 20000;
         const panelOn = () => settings.get('panel') === 'spotify';
+        // Showcase shows (0.11.0): Spotify while it has a track (else the clock), or the clock only
+        const showcaseMusic = () => settings.get('showcase') !== 'clock';
         let ownNow = false;
         const musicOnHub = () => {
             const id = HUB.SCREENS[scr][0];
-            return id === 'showcase' || (panelOn() && ((id === 'drive' && !!look().panelRect) || id === 'gforce'));
+            return (id === 'showcase' && showcaseMusic()) || (panelOn() && ((id === 'drive' && !!look().panelRect) || id === 'gforce'));
         };
         const music = new Music(ctx, {
             shown: () => visible() && ((page === 0 && musicOnHub()) || page === 2),
@@ -383,7 +397,7 @@ mgu.run({
             return was.on || was.held;
         });
         /*
-         * Favourite looks on Drive (0.10.0): a still tap on the gear or the speed (the look's S.zones) goes to the
+         * Favourite looks on Drive (0.10.0; 0.11.0: the gear only): a still tap on the gear (S.zones.gear) goes to the
          * next favourite, with a toast for LOOK_TOAST_MS; fewer than two favourites: a hint how to add them.
          * Ignored on a swipe or a moving finger (PREFS.stillTap) and while the shift lights build or flash.
          */
@@ -416,8 +430,8 @@ mgu.run({
                 gLat: d.gLat, gLong: d.gLong, gMax: Number(settings.get('gScale')) || 1.5,
                 trail: trail.map((p) => [p[1], p[2]]),
                 peak: { acc: peak.acc, brk: peak.brk, lat: peak.lat, rpm: peak.rpm, speed: speedOf(peak.speed) },
-                oil: { f: oil, thr: oilThr, ok: warm('oil', oil, oilThr) },
-                cool: { f: cool, thr: coolThr, ok: warm('coolant', cool, coolThr) },
+                oil: { f: oil, thr: oilThr, ok: warm('oil', oil, oilThr), kind: 'oil' },
+                cool: { f: cool, thr: coolThr, ok: warm('coolant', cool, coolThr), kind: 'coolant' },
                 demo: false, session: now - since,
                 // a tap on a look's session clock (L.sessionTap): that clock back to 0:00 (the peaks stay), a flash
                 sessionTap: cv.own ? () => { since = Date.now(); sessionAt = since; log.info('session clock reset (tap)'); } : null,
@@ -773,34 +787,70 @@ mgu.run({
                 cv.target(cx, cy, TILE_W, TILE_H, () => { settings.set('look', l.id); }, 'look:' + l.id, 10);
             });
             // the right panel: two choices, the current one lit
-            const px = x0 + cols * TILE_W + (cols - 1) * g + 40, fcw = 400, pw = S.x + S.w - px - fcw - 32, ph = 112;
+            const px = x0 + cols * TILE_W + (cols - 1) * g + 40, fcw = 400, pw = S.x + S.w - px - fcw - 32, ph = 84;
             lbl('Right panel on Drive', px, S.y + 20, 18, t.dim);
             [['g', 'G-meter', 'Live g-meter and session peaks'], ['spotify', 'Spotify', 'What plays, with touch controls']].forEach((o, i) => {
                 const oy = top + i * (ph + g), on = (panelOn() ? 'spotify' : 'g') === o[0];
                 if (on) { cv.roundRect(px, oy, pw, ph, u.radius, L.withAlpha(acc, 0.22)); cv.strokeRoundRect(px, oy, pw, ph, u.radius, 3, acc); } else card(cv, t, px, oy, pw, ph, false);
                 // a small glyph: rings for the g-meter, three bars for Spotify
-                const gx = px + 52, gy = oy + ph / 2, c = on ? t.text : t.dim;
+                const gx = px + 48, gy = oy + ph / 2, c = on ? t.text : t.dim;
                 if (o[0] === 'g') { cv.arc(gx, gy, 28, 30, 0, 360, c); cv.arc(gx, gy, 13, 15, 0, 360, c); cv.circle(gx + 9, gy - 6, 6, on ? acc : c); }
                 else [[-14, 34], [0, 50], [14, 26]].forEach((b) => cv.roundRect(gx + b[0] - 4, gy - b[1] / 2, 8, b[1], 4, c));
-                lbl(o[1], px + 104, oy + 56, u.size + 6, t.text);
-                cv.text(fitText(cv, o[2], 18, pw - 124), px + 104, oy + 92, 18, t.dim, { literal: true });
+                lbl(o[1], px + 96, oy + 40, u.size + 4, t.text);
+                cv.text(fitText(cv, o[2], 17, pw - 112), px + 96, oy + 66, 17, t.dim, { literal: true });
                 cv.target(px, oy, pw, ph, () => settings.set('panel', o[0]), 'panel:' + o[0], u.radius);
             });
-            const ny = top + 2 * ph + g + 30;
-            ['Spotify also shows on the G-force page.', 'Showcase always shows Spotify.'].forEach((l2, k) => {
-                if (ny + k * 26 < S.y + S.h) cv.text(fitText(cv, l2, 18, pw), px, ny + k * 26, 18, t.dim, { literal: true });
+            // Showcase shows (0.11.0): Spotify while it plays (else the clock), or the clock only
+            const ny = top + 2 * ph + g + 22, sh = 56, sw = (pw - g) / 2;
+            lbl('Showcase shows', px, ny + 6, 18, t.dim);
+            [['spotify', 'Spotify when playing', '(else the clock)'], ['clock', 'Clock only', '']].forEach((o, i) => {
+                const ox = px + i * (sw + g), oy = ny + 20, on = (showcaseMusic() ? 'spotify' : 'clock') === o[0];
+                if (on) { cv.roundRect(ox, oy, sw, sh, u.radius, L.withAlpha(acc, 0.22)); cv.strokeRoundRect(ox, oy, sw, sh, u.radius, 3, acc); } else card(cv, t, ox, oy, sw, sh, false);
+                cv.text(fitText(cv, o[1], 20, sw - 24), ox + 14, oy + (o[2] ? sh / 2 - 2 : sh / 2 + 7), 20, on ? t.text : t.dim, { literal: true });
+                if (o[2]) cv.text(fitText(cv, o[2], 16, sw - 24), ox + 14, oy + sh / 2 + 18, 16, t.dim, { literal: true });
+                cv.target(ox, oy, sw, sh, () => settings.set('showcase', o[0]), 'showcase:' + o[0], u.radius);
             });
+            showcaseBgRow(cv, S, lk, px, ny + 20 + sh + 14, pw, Math.min(76, S.y + S.h - (ny + 20 + sh + 14) - 26));
             // favourite looks: their own column, and Cluster & HUD at its foot
-            const fx = px + pw + 32, fh = 2 * ph + g, tf = { font: u.txt, spacing: u.upper ? u.spacing * 0.6 : 0, literal: true };
+            const fx = px + pw + 32, fh = 2 * 112 + g, tf = { font: u.txt, spacing: u.upper ? u.spacing * 0.6 : 0, literal: true };
             lbl('Favourite looks', fx, S.y + 20, 18, t.dim);
             card(cv, t, fx, top, fcw, fh, false);
             star(cv, fx + 34, top + 44, 14, true, STAR);
             const names = fl.map((id) => lookOf(id).name).join(' + ') || 'None yet';
             cv.text(fitText(cv, valueText(u, names), u.size + 4, fcw - 76, tf), fx + 60, top + 53, u.size + 4, t.text, tf);
-            ['Tap the gear or the speed on', 'Drive to switch between them.', '', 'Star a look (top-right of its', 'card) to add it; 2 or more.'].forEach((l2, k) => {
+            ['Tap the gear on Drive to', 'switch between them.', '', 'Star a look (top-right of its', 'card) to add it; 2 or more.'].forEach((l2, k) => {
                 if (l2 && top + 100 + k * 26 < top + fh - 8) cv.text(fitText(cv, l2, 18, fcw - 48), fx + 24, top + 100 + k * 26, 18, k < 2 ? t.text : t.dim, { literal: true });
             });
             linkMini(cv, S, lk, fx, S.y + S.h - 64, fcw, 64, 'th:cluster', 'Cluster & HUD', () => { ask = null; press(4, 'th:cluster'); });
+        }
+
+        /**
+         * Showcase background (0.11.0, prefs.js BG_*): the waves' brightness, 100 % down to 15 %, with - and +
+         * (each the row's height, 76 page px wide) and between them a live preview: the current look's
+         * waves as darkened on Showcase, the percent over them. Darkens the waves only.
+         */
+        function showcaseBgRow(cv, S, lk, x, y, w, h) {
+            const t = S.t, u = lk.ui, acc = t.sel || t.accent, v = PREFS.bgLevel(settings.get(PREFS.BG_KEY)), bw = 76;
+            cv.text(valueText(u, 'Showcase background'), x, y + 12, 18, t.dim, { font: u.lbl || u.txt, spacing: u.upper ? u.spacing : 0, literal: true });
+            const ry = y + 22, pvx = x + bw + 10, pvw = w - 2 * (bw + 10);
+            // the preview: the same picture Showcase draws (drawn on here if it isn't there yet), the same darkening
+            const WH = S.y + S.h + 6, ready = SC.waves.step(lk.id, Math.round(WAVE_W * WH / 1600), 20);
+            if (ready) cv.image(IMG.wave, pvx, ry, pvw, h); else cv.fillRect(pvx, ry, pvw, h, waveBase(lk.id));
+            if (v < 100) cv.fillRect(pvx, ry, pvw, h, L.withAlpha('#000000', 1 - v / 100));
+            cv.strokeRoundRect(pvx, ry, pvw, h, 6, 1, L.withAlpha('#ffffff', 0.18));
+            // the level: a thin bar along the preview's foot, the percent in the middle
+            cv.fillRect(pvx + 10, ry + h - 10, pvw - 20, 4, L.withAlpha('#ffffff', 0.18));
+            cv.fillRect(pvx + 10, ry + h - 10, Math.round((pvw - 20) * v / 100), 4, acc);
+            cv.text(v + ' %', pvx + pvw / 2, ry + h / 2 + 6, 22, '#ffffff', { align: 'center', font: u.num, literal: true });
+            [[-1, x], [1, x + w - bw]].forEach((b) => {
+                const to = PREFS.bgStep(v, b[0]), k2 = 'bg:' + (b[0] < 0 ? '-' : '+'), bx = b[1], cx = bx + bw / 2, cy = ry + h / 2;
+                const down = isDown(k2);
+                cardOf(lk)(cv, t, bx, ry, bw, h, down);
+                const c = to !== null ? t.text : L.withAlpha(t.dim, 0.4);
+                cv.line(cx - 12, cy, cx + 12, cy, 3, c);
+                if (b[0] > 0) cv.line(cx, cy - 12, cx, cy + 12, 3, c);
+                if (to !== null) cv.target(bx, ry, bw, h, () => { gDown = Date.now(); downKey = k2; settings.set(PREFS.BG_KEY, to); }, k2, u.radius);
+            });
         }
 
         /*
@@ -1269,43 +1319,42 @@ mgu.run({
             return s.slice(0, lo) + '...';
         }
 
-        // the Showcase pictures (app root PNGs, copied next to main.js by the build): decoded once
-        const img = { car: null, logo: null };
+        // the Showcase pictures (app root PNGs, copied next to main.js by the build, never changed): decoded
+        // once; pictures.js prepares their pixels for the size and the renderer path they show on (0.11.0)
+        const src = { car: null, logo: null };
         [['car', 'showcase_car.png'], ['logo', 'showcase_logo.png']].forEach((p) => {
-            try {
-                const im = PNG.decode(fs.readFileSync(path.join(__dirname, p[1])));
-                record.setImage(IMG[p[0]], im.w, im.h, im.data);
-                img[p[0]] = { id: IMG[p[0]], w: im.w, h: im.h };
-            } catch (e) { log.warn('showcase picture ' + p[1] + ': ' + e.message); }
+            try { src[p[0]] = PNG.decode(fs.readFileSync(path.join(__dirname, p[1]))); } catch (e) { log.warn('showcase picture ' + p[1] + ': ' + e.message); }
         });
+        const SC = {
+            src, ids: IMG, waveW: WAVE_W, base: waveBase, music: true,
+            waves: new Waves((w, h, d) => { record.setImage(IMG.wave, w, h, d); }),
+            pics: new Pictures((id, w, h, d) => { record.setImage(id, w, h, d); }),
+        };
         let gRectNow = null;
         /**
-         * Drive's favourite looks (0.10.0): the gear and the speed (the look's S.zones) take a tap (favTap),
-         * after the look's own targets (its session clock wins where they meet); small stars mark them with
-         * two or more favourites; the toast (the look now, or the hint) under the speed's unit.
+         * Drive's favourite looks (0.10.0): the gear (the look's S.zones.gear) takes a tap (favTap), after the
+         * look's own targets (its session clock wins where they meet); the toast (the look now, or the hint)
+         * under the speed's unit. 0.11.0: the gear only - a tap on the speed does nothing - and no stars on
+         * Drive (favourites are starred on Theme).
          */
         function favDrive(cv, S, lk) {
             const z = S.zones;
             if (!z) return;
-            const n = favs().length, u = lk.ui;
-            [['gear', z.gear], ['speed', z.speed]].forEach((p) => { if (p[1]) cv.target(p[1].x, p[1].y, p[1].w, p[1].h, () => favTap(S), 'favlook:' + p[0], 0); });
-            if (n >= PREFS.FAV_MIN && !S.strobe) {
-                if (z.chip) { cv.circle(z.chip.x, z.chip.y, 15, L.withAlpha('#ffffff', 0.08)); star(cv, z.chip.x, z.chip.y, 9, true, L.withAlpha(STAR, 0.75)); }
-                if (z.star) star(cv, z.star.x, z.star.y, 8, true, L.withAlpha(STAR, 0.6));
-            }
+            const u = lk.ui;
+            // 0.11.0: the gear only (the speed no longer switches), and no stars on the dash
+            if (z.gear) cv.target(z.gear.x, z.gear.y, z.gear.w, z.gear.h, () => favTap(S), 'favlook:gear', 0);
             if (!lookToast) return;
             const age = Date.now() - lookToast.at;
             if (age > LOOK_TOAST_MS || age < 0 || !z.toast) { if (age > LOOK_TOAST_MS) lookToast = null; return; }
             const f = { font: u.txt, spacing: u.upper ? u.spacing * 0.6 : 0, literal: true };
             const a = valueText(u, lookToast.lines[0]), b = lookToast.lines[1] || '';
             const aw = cv.textWidth(a, 24, f), bw = b ? cv.textWidth(b, 17, { literal: true }) : 0;
-            const w = Math.min(S.w - 20, 64 + aw + (b ? 24 + bw : 0) + 28), h = 52;
+            const w = Math.min(S.w - 20, 34 + aw + (b ? 24 + bw : 0) + 34), h = 52;
             const x = Math.max(S.x + 10, Math.min(S.x + S.w - 10 - w, z.toast.x - w / 2)), y = z.toast.y;
             cv.roundRect(x, y, w, h, h / 2, L.withAlpha('#000000', 0.82));
             cv.strokeRoundRect(x, y, w, h, h / 2, 2, STAR);
-            star(cv, x + 34, y + h / 2, 12, !lookToast.hint, STAR);
-            cv.text(a, x + 58, y + h / 2 + 9, 24, '#ffffff', f);
-            if (b) cv.text(b, x + 58 + aw + 24, y + h / 2 + 7, 17, '#c8ced8', { literal: true });
+            cv.text(a, x + 34, y + h / 2 + 9, 24, '#ffffff', f);
+            if (b) cv.text(b, x + 34 + aw + 24, y + h / 2 + 7, 17, '#c8ced8', { literal: true });
         }
         log.info(clock.line() + ' (Showcase, 12-hour H:MM)');
 
@@ -1345,7 +1394,7 @@ mgu.run({
                     lk.draw(cv, S);
                     if (S.panel === 'spotify') music.panel(cv, S, lk, lk.panelRect(S), HUB.dotsBox(gr, HUB.SCREENS.length));
                     if (cv.own) favDrive(cv, S, lk);
-                } else if (id === 'showcase') HUB.showcase(cv, st, S, music, lk, gr, img, clock.now(S.now));
+                } else if (id === 'showcase') { SC.music = showcaseMusic(); SC.dim = PREFS.bgLevel(settings.get(PREFS.BG_KEY)); HUB.showcase(cv, st, S, music, lk, gr, SC, clock.now(S.now)); }
                 else if (id === 'warmup') HUB.warmup(cv, st, Object.assign({}, S, { redline: WARM_REDLINE, maxRpm: Math.max(7000, S.maxRpm) }), warmModel(S));
                 else if (id === 'gforce') HUB.gforce(cv, st, S, gModel(S), S.panel === 'spotify' ? music : null, gr, lk);
                 else if (id === 'tires') HUB.tires(cv, st, S, tireModel(S));

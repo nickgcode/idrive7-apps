@@ -82,9 +82,15 @@ function block(cv, x, y, w, h, label, value, tone, size) {
     cv.text(label, x + 16, y + 22, 16, tone || DIM, { font: TXT, spacing: 2, literal: true });
     cv.text(value, x + w - 12, y + h - 12, size || 30, WHITE, { align: 'right', font: NUM, literal: true });
 }
+/** Oil / coolant (0.11.0): toned by temperature zone (lib.js TEMP_ZONES: blue cold, green normal, red too hot), a zone strip along the foot lit to the value. */
+const ZONE_TAG = { cold: '  COLD', ok: '  OK', hot: '  HOT' };
 function tempBlock(cv, x, y, w, h, label, v) {
-    const tone = v.ok === true ? GRN : v.ok === false ? BLU : null;
-    block(cv, x, y, w, h, label + (v.ok === false ? '  COLD' : v.ok === true ? '  OK' : ''), isNum(v.f) ? Math.round(v.f) + '°F' : '--', tone);
+    const zg = L.tempGauge(v, { cold: BLU, ok: GRN, hot: RED }, '#14171c', 0.32);
+    block(cv, x, y, w, h, label + (zg.zone ? ZONE_TAG[zg.zone] : ''), isNum(v.f) ? Math.round(v.f) + '°F' : '--', zg.on);
+    const sx = x + 16, sw = w - 28, sy = y + h - 7;
+    const mk = L.zoneMarks(v);
+    [[0, mk[0], 'cold'], [mk[0], mk[1], 'ok'], [mk[1], 1, 'hot']].forEach((z) => cv.fillRect(sx + sw * z[0], sy, sw * (z[1] - z[0]) - 1, 3, L.mix('#14171c', zg.C[z[2]], 0.4)));
+    if (zg.zone) { cv.fillRect(sx, sy, sw * zg.pos, 3, zg.on); cv.fillRect(sx + sw * zg.pos - 1.5, sy - 3, 3, 9, WHITE); }
 }
 
 /** Centre-zero bar for the longitudinal g: green to the right (accelerating), red to the left (braking). */

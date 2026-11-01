@@ -338,51 +338,77 @@ function tires(cv, st, S, M) {
 function clock12(d) {
     return CLOCK.text({ h: d.getHours(), m: d.getMinutes(), dow: d.getDay(), mon: d.getMonth(), day: d.getDate() });
 }
-/** Fit an image (iw x ih) into a box, aspect kept, centred. */
-function fit(iw, ih, x, y, w, h) {
-    const k = Math.min(w / iw, h / ih), ww = iw * k, hh = ih * k;
-    return { x: x + (w - ww) / 2, y: y + (h - hh) / 2, w: ww, h: hh };
-}
-
 /**
- * Showcase: three columns across the page. Left the car (img.car), centre Spotify (music.panel)
- * while a track is there, else a large 12-hour clock (H:MM, clock.js); right the logo (img.logo) on a dark plate.
- * img = { car: { id, w, h } | null, logo: ... }. Returns the centre column's rect.
+ * Showcase (0.11.0): the look's flowing waves (waves.js) over the whole page; left the car (Nick's
+ * showcase_car.png as it is) on a soft floor shadow; centre a big 12-hour clock (H:MM, clock.js) and
+ * the date, or, while Spotify has a track and the setting says so, a smaller clock over the frosted
+ * now-playing card (music.card); right the G mark, a thin divider and showcase_logo.png (as it is,
+ * roundel included) straight on the waves: no plate. The pictures are prepared for the renderer path
+ * (pictures.js: smooth scaling, no fringes, composited over the waves where RGBA shows opaque).
+ * sc = { waves: Waves, pics: Pictures, ids: { wave, car, logo }, src: { car, logo } decoded RGBA,
+ * music: true when Spotify may show }. Returns the card's rect, or null.
  */
-function showcase(cv, st, S, music, lk, gr, img, now) {
-    const t = st.t, gap = 16, cw = (S.w - 2 * gap) / 3, top = S.y + 6, h = S.h - 6;
-    const c0 = S.x, c1 = S.x + cw + gap, c2 = S.x + 2 * (cw + gap);
-    // left: the car, a soft floor shadow under it
-    if (img.car) {
-        const r = fit(img.car.w, img.car.h, c0 + 8, top + 10, cw - 16, h - 40);
-        cv.roundRect(r.x + r.w * 0.08, r.y + r.h * 0.86, r.w * 0.84, r.h * 0.1, r.h * 0.05, withAlpha('#000000', 0.35));
-        cv.image(img.car.id, r.x, r.y, r.w, r.h);
+const CAR_BOX = { w: 470, h: 350 };
+/** The waves' brightness, 0.15..1, from the setting's percent (prefs.js bgLevel: anything else 100 %). */
+const dimOf = (pct) => { const n = Number(pct); return pct === undefined || pct === null || !isFinite(n) ? 1 : Math.max(0.15, Math.min(1, n / 100)); };
+const hexRgb = (h) => [1, 3, 5].map((i) => parseInt(String(h).slice(i, i + 2), 16) || 0);
+function showcase(cv, st, S, music, lk, gr, sc, now) {
+    const px = lk.id === 'pixel', white = '#ffffff';
+    // the waves: the whole page (under the kit's header in the window layout), the current look's picture,
+    // a few rows a frame until it's there (its darkest colour meanwhile)
+    const PW = 1600, wy = cv.own ? 0 : S.y - 6, WH = S.y + S.h + 6 - wy, scale = cv.textScale || 1, mode = cv.pictures || 'blend';
+    const ready = sc.waves.step(lk.id, Math.round(sc.waveW * WH / PW), 25);
+    if (ready) cv.image(sc.ids.wave, 0, wy, PW, WH);
+    else cv.fillRect(0, wy, PW, WH, sc.base(lk.id));
+    // Showcase background (setting showcaseBg, 15..100 %): the waves darkened, nothing else
+    const dim = dimOf(sc.dim);
+    if (dim < 1) cv.fillRect(0, wy, PW, WH, withAlpha('#000000', 1 - dim));
+    const playing = !!(music && sc.music && music.hasTrack());
+    // a picture at page rect r: its pixels prepared at the device size; on the opaque path over the waves under it
+    const show = (key, src, r, o) => {
+        o = o || {};
+        const dw = r.w * scale, dh = r.h * scale;
+        const at = (x, y) => (ready ? sc.waves.sample(r.x + (x + 0.5) * r.w / Math.round(dw), r.y - wy + (y + 0.5) * r.h / Math.round(dh), PW, WH) : hexRgb(sc.base(lk.id)));
+        const bg = (x, y) => at(x, y).map((v) => v * dim);
+        const p = sc.pics.show(sc.ids[key], src, dw, dh, mode, Object.assign({ bg: bg, bgKey: (ready ? sc.waves.key : 'base:' + lk.id) + '|' + dim + '|' + [r.x, r.y].map(Math.round).join(',') }, o));
+        cv.image(p.id, r.x, r.y, r.w, r.h);
+    };
+    // left: the car on its floor shadow (in the same pixels)
+    if (sc.src.car) {
+        const c = sc.src.car, k = Math.min(CAR_BOX.w / c.w, CAR_BOX.h / c.h), w = Math.round(c.w * k), h = Math.round(c.h * k);
+        show('car', c, { x: S.x + 36, y: Math.round(S.y + (S.h - h) / 2 + 6), w: w, h: h }, { shadow: { y: 0.93, rx: 0.47, ry: 0.07, alpha: 0.6 } });
     }
-    // centre: Spotify, or the clock
-    const mid = { x: c1, y: top, w: cw, h: h };
-    if (music && music.hasTrack()) music.panel(cv, S, lk, mid, gr);
-    else {
+    // right: the G mark | the logo, straight on the waves, clear of the dots and the G button below
+    const markY = S.y + (playing ? 0.40 : 0.44) * S.h, gh = 64, gw = L.badgeWidth(gh), gap = 30;
+    const right = Math.min(S.x + S.w - 30, PW - 40), room = right - 1050;
+    let lh = 0, lw = 0;
+    if (sc.src.logo) { const l = sc.src.logo; lh = Math.min(120, (room - gw - 2 * gap - 2) * l.h / l.w); lw = Math.round(lh * l.w / l.h); lh = Math.round(lh); }
+    const total = gw + (lw ? 2 * gap + 2 + lw : 0), mx = right - total;
+    L.badge(cv, mx, markY + gh / 2, gh, lk.badgeLetter);
+    if (lw) {
+        cv.fillRect(mx + gw + gap, markY - 34, 2, 68, withAlpha(white, 0.35));
+        show('logo', sc.src.logo, { x: Math.round(mx + gw + 2 * gap + 2), y: Math.round(markY - lh / 2), w: lw, h: lh });
+    }
+    // centre: the clock (big, white) and the date; with Spotify: smaller, over the card
+    const c = now && typeof now === 'object' && now.time ? now : clock12(new Date(now)), cx = 800;
+    const sized = (want, maxW) => { const w0 = st.numW(cv, c.time, want); return w0 > maxW ? Math.floor(want * maxW / w0) : want; };
+    if (!playing) {
         if (music) music.band = null;
-        // now: the clock's reading (clock.js: the car's time when it sends one, else the head unit's), or a time in ms
-        const c = now && typeof now === 'object' && now.time ? now : clock12(new Date(now)), size = 132, tw = st.numW(cv, c.time, size), aw = st.txtW(cv, c.ampm, 30);
-        const cx = c1 + cw / 2, by = top + h / 2 + size * 0.32, x0 = cx - (tw + 14 + aw) / 2;
-        st.num(cv, c.time, x0, by, size, t.text);
-        st.txt(cv, c.ampm, x0 + tw + 14, by, 30, t.dim);
-        st.txt(cv, c.date, cx, by + 58, 22, t.dim, { align: 'center' });
-        if (music) {
-            const s = music.status, note = s === 'noauth' || s === 'reauth' ? 'Spotify: not signed in (Options > Spotify)' : s === 'offline' ? 'Spotify: no internet' : '';
-            if (note) st.txt(cv, note, cx, top + h - 18, 15, withAlpha(t.dim, 0.8), { align: 'center' });
+        const size = sized(px || lk.id === 'digital' ? 150 : 172, 440), by = S.y + S.h / 2 + size * 0.34, tw = st.numW(cv, c.time, size);
+        st.num(cv, c.time, cx - tw / 2, by, size, white);
+        st.txt(cv, c.date, cx, by + 56, 24, withAlpha(white, 0.75), { align: 'center' });
+        if (music && sc.music) {
+            const s2 = music.status, note = s2 === 'noauth' || s2 === 'reauth' ? 'Spotify: not signed in (Options > Spotify)' : s2 === 'offline' ? 'Spotify: no internet' : '';
+            if (note) st.txt(cv, note, cx, S.y + S.h - 18, 15, withAlpha(white, 0.7), { align: 'center' });
         }
+        return null;
     }
-    // right: the logo on a dark plate, clear of the G button and the dots below it
-    const ph = Math.min(h, (gr ? gr.y : top + h) - 14 - top);
-    cv.roundRect(c2, top, cw, ph, Math.max(8, st.r), '#050607');
-    cv.strokeRoundRect(c2, top, cw, ph, Math.max(8, st.r), 1, withAlpha('#ffffff', 0.08));
-    if (img.logo) {
-        const r = fit(img.logo.w, img.logo.h, c2 + 34, top + 20, cw - 68, ph - 40);
-        cv.image(img.logo.id, r.x, r.y, r.w, r.h);
-    }
-    return mid;
+    const size = sized(px ? 90 : 100, 420), by = S.y + 14 + Math.round(size * 0.74), tw = st.numW(cv, c.time, size);
+    st.num(cv, c.time, cx - tw / 2, by, size, white);
+    const R = { x: 572, y: by + 30, w: 456, h: 0 };
+    R.h = S.y + S.h - 8 - R.y;
+    music.card(cv, S, lk, R);
+    return R;
 }
 
-module.exports = { SCREENS, HOME, GREEN, style, dots, dotsBox, toast, pill, warmup, gforce, tires, showcase, clock12 };
+module.exports = { SCREENS, HOME, GREEN, style, dots, dotsBox, toast, pill, warmup, gforce, tires, showcase, clock12, CAR_BOX, dimOf };

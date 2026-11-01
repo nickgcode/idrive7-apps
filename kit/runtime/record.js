@@ -110,7 +110,8 @@ class Recorder {
         this.atlases = new Set();    // glyph atlases and colour ramps it uses (uploaded once by the transport)
         this.ramps = new Set();
         this.images = new Set();     // pixel images it draws (setImage)
-        this.targets = [];           // what a tap or the controller can press on the page: { x, y, w, h, run, key } (target)
+        this.targets = [];           // what a tap or the controller can press on the page: { x, y, w, h, run, key, r, quiet } (target)
+        this.pictures = 'blend';     // how its pixel images (op 18) are shown: Display.canvas() says (see there)
         this._extra = 0;
         this.extraUsed = false;      // the drawing read extra (it reaches below the page: display.js places it so)
         this.recording = true;
@@ -134,7 +135,11 @@ class Recorder {
      * key names it from frame to frame (the controller stays on it). Drawn by the caller; where the kit
      * runs the screen (display.js) it rings the one the controller is on.
      */
-    target(x, y, w, h, run, key, r) { this.targets.push({ x, y, w, h, run, key: String(key), r }); return this; }
+    /**
+     * A page target. o.quiet: the kit draws no 35% press flash over it and the controller's ring is a
+     * circle around its middle, not the rect's outline (buttons that draw their own soft press state).
+     */
+    target(x, y, w, h, run, key, r, o) { this.targets.push({ x, y, w, h, run, key: String(key), r, quiet: !!(o && o.quiet) }); return this; }
 
     /* ---------- canvas.js API ---------- */
     /** Draw pixel image `id` (see setImage) scaled into x, y, w, h (nearest pixel). */

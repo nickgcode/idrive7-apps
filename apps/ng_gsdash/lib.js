@@ -175,7 +175,37 @@ function inkCentred(cv, s, cx, cy, size, c, o) {
     return y1 - y0;
 }
 
+/*
+ * Oil / coolant temperature zones (0.11.0), in °F, for every look's oil and coolant gauge - tune them here.
+ * Blue below cold, green from cold to hot, red above hot. min / max: where the gauges' tracks start and end.
+ */
+const TEMP_ZONES = {
+    oil: { cold: 160, hot: 260, min: 100, max: 300 },
+    coolant: { cold: 160, hot: 230, min: 100, max: 270 },
+};
+const ZONE_COLS = { cold: '#3d9bff', ok: '#2fd27a', hot: '#ff3b30' };
+const zonesOf = (v) => TEMP_ZONES[v && v.kind] || TEMP_ZONES.coolant;
+const zoneOfF = (z, f) => (f < z.cold ? 'cold' : f > z.hot ? 'hot' : 'ok');
+/** The zone of a temperature v ({ f: °F, kind: 'oil' | 'coolant' }): 'cold' | 'ok' | 'hot', null with no value. */
+function tempZone(v) { return v && isNum(v.f) ? zoneOfF(zonesOf(v), v.f) : null; }
+/** Where v sits along its gauge's track, 0..1 (0 with no value). */
+function tempPos(v) { const z = zonesOf(v); return v && isNum(v.f) ? clamp((v.f - z.min) / (z.max - z.min), 0, 1) : 0; }
+/** The zone at position p (0..1) along v's track. */
+function zoneAt(v, p) { const z = zonesOf(v); return zoneOfF(z, z.min + p * (z.max - z.min)); }
+/** The zone boundaries along v's track: [cold, hot] as 0..1. */
+function zoneMarks(v) { const z = zonesOf(v); return [(z.cold - z.min) / (z.max - z.min), (z.hot - z.min) / (z.max - z.min)]; }
+/**
+ * A zone gauge for v: { zone, pos, on (the current zone's colour, null with no value), C (the colours),
+ * seg(p) - a segment at p: lit in the current zone's colour up to the value, else its own zone faintly
+ * (mixed k into the look's unlit track colour) }. cols: a look's own cold / ok / hot colours.
+ */
+function tempGauge(v, cols, track, k) {
+    const C = Object.assign({}, ZONE_COLS, cols || {}), zone = tempZone(v), pos = tempPos(v), kk = k == null ? 0.3 : k;
+    return { zone, pos, on: zone ? C[zone] : null, C, seg: (p) => (zone && p <= pos ? C[zone] : mix(track, C[zoneAt(v, p)], kk)) };
+}
+
 module.exports = {
+    TEMP_ZONES, ZONE_COLS, tempZone, tempPos, zoneAt, zoneMarks, tempGauge,
     modeTone, sessionTap, inkCentred,
     loadFonts, FAMILIES, gearText, num0, num1, num2, rpmText, clock, lights, LIGHTS, badge, badgeWidth,
     pt, tick, needle, slant, chamfer, chamferStroke, halfSquare, RAD, withAlpha, mix, clamp, isNum,

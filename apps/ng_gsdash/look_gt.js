@@ -10,6 +10,7 @@ const L = require('./lib');
 const { withAlpha, clamp, isNum } = L;
 const NUM = 'gs_gt_num', TXT = 'gs_gt_txt', GEAR = 'gs_gt_gear';
 const Y = '#ffd400', LINE = '#2e2e2e', CELL = '#0b0b0b', COLD = '#1e6fe0';
+const ZONES_GT = { cold: COLD, ok: '#25e05a', hot: '#e8231c' };
 
 const palette = Object.assign({}, require('./kit/themes').theme('m_tricolour'), {
     name: 'GT',
@@ -114,12 +115,18 @@ module.exports = {
         cv.text(S.unit, cx[0] + cw[0] - 14, top + 26, 17, '#9a9a9a', { align: 'right', font: TXT, spacing: 1.5, literal: true });
         cv.text(isNum(S.speed) ? String(Math.round(S.speed)) : '---', cx[0] + cw[0] - 22, top + sh - 18, 132 + ex * 0.3, '#ffffff', { align: 'right', font: NUM, literal: true });
         const hw = (cw[0] - gap) / 2, ty = top + sh + gap, th = H - sh - gap;
+        // 0.11.0: temperature zones (lib.js TEMP_ZONES): the cell solid blue when cold, solid red when too hot,
+        // a green dot when normal; a zone strip along its foot, lit to the value
         [['OIL °F', S.oil], ['WATER °F', S.cool]].forEach((p, i) => {
-            const v = p[1], cold = v.ok === false, x = cx[0] + i * (hw + gap);
-            cell(cv, x, ty, hw, th, p[0], cold ? COLD : null);
-            cv.text(isNum(v.f) ? String(Math.round(v.f)) : '--', x + hw - 16, ty + th - 18, 62, cold ? '#ffffff' : v.ok ? '#ffffff' : '#8a8a8a', { align: 'right', font: NUM, literal: true });
-            if (v.ok === true) cv.circle(x + 22, ty + th - 36, 7, '#25e05a');
-            if (cold) cv.text('COLD', x + 14, ty + th - 22, 17, '#ffffff', { font: TXT, spacing: 1.5, literal: true });
+            const v = p[1], x = cx[0] + i * (hw + gap), zg = L.tempGauge(v, ZONES_GT, '#1a1a1a', 0.35), fill = zg.zone === 'cold' || zg.zone === 'hot' ? zg.on : null;
+            cell(cv, x, ty, hw, th, p[0], fill);
+            cv.text(isNum(v.f) ? String(Math.round(v.f)) : '--', x + hw - 16, ty + th - 24, 62, zg.zone ? '#ffffff' : '#8a8a8a', { align: 'right', font: NUM, literal: true });
+            if (zg.zone === 'ok') cv.circle(x + 22, ty + th - 42, 7, zg.on);
+            if (fill) cv.text(zg.zone === 'cold' ? 'COLD' : 'HOT', x + 14, ty + th - 28, 17, '#ffffff', { font: TXT, spacing: 1.5, literal: true });
+            const sx = x + 10, sw = hw - 20, sy = ty + th - 12, n = 16, g2 = 2, bw = (sw - g2 * (n - 1)) / n;
+            cv.fillRect(sx - 2, sy - 2, sw + 4, 9, '#000000');
+            for (let k = 0; k < n; k++) cv.fillRect(sx + k * (bw + g2), sy, bw, 5, zg.seg((k + 0.5) / n));
+            if (zg.zone) cv.fillRect(sx + zg.pos * sw - 1.5, sy - 3, 3, 11, '#ffffff');
         });
 
         // centre: the gear (the whole cell flashes at the shift point), rpm under it

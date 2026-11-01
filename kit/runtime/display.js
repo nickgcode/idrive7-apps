@@ -614,6 +614,10 @@ class Display {
         // the kit runs the screen: buttons drawn on the page (G.button) take the place of the bar's
         r.own = this.own() && this.active();
         r.extra = r.own && this.place.extra ? this.place.extra : 0;
+        // how pixel images (op 18) with transparent parts come out: 'premultiplied' (mgu-render/1: the kit
+        // premultiplies them, filtered), 'opaque' (an upstream renderer: RGBA shown opaque, nearest pixel;
+        // send them premultiplied, i.e. over black), 'blend' (software frames: straight alpha, blended)
+        r.pictures = !this.active() || !this.gpu ? 'blend' : this.gpu.native ? 'premultiplied' : 'opaque';
         return r;
     }
 
@@ -783,9 +787,13 @@ class Display {
         // the page button (or row) the controller is on, and one just pressed
         const k = pl.scale, onPage = (key) => !this.sheet && key && (this.pageTargets || []).find((q) => 'tgt:' + q.key === key);
         const pt = onPage(this.focusKey), pp = Date.now() - this.pressedT < 300 && onPage(this.pressed);
-        if (pp) c.roundRect(pp.x * k + pl.ox, pp.y * k + pl.oy, pp.w * k, pp.h * k, (pp.r != null ? pp.r : pp.h / 2) * k, G.withAlpha(t.sel || t.accent, 0.35));
+        if (pp && !pp.quiet) c.roundRect(pp.x * k + pl.ox, pp.y * k + pl.oy, pp.w * k, pp.h * k, (pp.r != null ? pp.r : pp.h / 2) * k, G.withAlpha(t.sel || t.accent, 0.35));
         if (this.focusKey === 'scroll' && this.pageScroll && !this.sheet) c.strokeRoundRect(hx + 6, FULL.headH + 6, W - hx - 12, H - this.barH() - FULL.headH - 12, 14, 3, G.withAlpha(t.sel || t.accent, 0.8));
-        if (pt) c.strokeRoundRect(pt.x * k + pl.ox - 5, pt.y * k + pl.oy - 5, pt.w * k + 10, pt.h * k + 10, (pt.r != null ? pt.r : pt.h / 2) * k + 5, 3, t.sel || t.accent);
+        if (pt && pt.quiet) {
+            // a quiet target (target(..., { quiet: true })): a round ring around its middle
+            const rr = Math.min(pt.w, pt.h) / 2 * k - 2, qx = (pt.x + pt.w / 2) * k + pl.ox, qy = (pt.y + pt.h / 2) * k + pl.oy;
+            c.strokeRoundRect(qx - rr, qy - rr, 2 * rr, 2 * rr, rr, 3, t.sel || t.accent);
+        } else if (pt) c.strokeRoundRect(pt.x * k + pl.ox - 5, pt.y * k + pl.oy - 5, pt.w * k + 10, pt.h * k + 10, (pt.r != null ? pt.r : pt.h / 2) * k + 5, 3, t.sel || t.accent);
         // the strip's bottom edge continues under the see-through part
         c.fillRect(sx, 0, W - sx, FULL.headH, HMI.headBg);
         c.fillRect(sx, FULL.headH - 2, W - sx, 2, G.withAlpha('#ffffff', 0.22));
