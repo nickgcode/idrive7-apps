@@ -5,7 +5,9 @@
  * That tool does all the work as root: it patches CarPlay so it sends its instrument-cluster map,
  * and draws it on the cluster. G's Dash only asks it, over the tool's documented line protocol, for
  * its state, and to turn the map on or off when the user confirms. Written for G's Dash from the
- * tool's documentation; it contains none of the tool's code.
+ * tool's documentation; it contains none of the tool's code. Written against Waze on cluster 0.7.1
+ * (works with 0.6.3 and later): its patch-service states busy, starting, unavailable, patched,
+ * original, error and unknown, and its reasons (an unpatchable build, a backup that is not pristine).
  *
  * What it reads (nothing stored by G's Dash: the patch service is the only truth):
  *   - passive, files only (the settings row): whether the tool is there, the "change waits for the
@@ -218,12 +220,14 @@ class ClusterMap {
             return V('checking', null, null, 'Checking...', 'Asking the patch service');
         }
         const why = p.reason ? ': ' + p.reason : '';
+        if (p.state === 'starting') return V('busy', null, null, 'Starting', 'Patch service starting' + why);
+        if (p.state === 'unavailable') return V('error', null, null, 'Unavailable', 'Patch service unavailable' + why);
         if (p.state === 'busy') return V('busy', null, null, 'Busy', 'The patch service is busy' + why);
         if (p.conflict) return V('conflict', null, null, 'Not supported', 'Not supported on this head unit: ' + p.conflict);
         const pend = p.pending || (p.state === 'unknown' && p.carplay === 'deferred' ? (f.pending || 'apply') : null);
         if (pend) return V('pending', pend === 'apply', pend === 'apply' ? 'revert' : 'apply', pend === 'apply' ? 'On after restart' : 'Off after restart', 'Restart the head unit to finish');
-        if (p.state === 'patched') return V('on', true, 'revert', 'On', 'CarPlay patched' + (p.mode ? ' (' + p.mode + (p.res ? ', ' + p.res : '') + ')' : ''));
-        if (p.state === 'original') return V('off', false, 'apply', 'Off', 'CarPlay as stock');
+        if (p.state === 'patched') return V('on', true, 'revert', 'On', 'CarPlay patched' + (p.mode ? ' (' + p.mode + (p.res ? ', ' + p.res : '') + ')' : '') + why);
+        if (p.state === 'original') return V('off', false, 'apply', 'Off', 'CarPlay as stock' + why);
         if (p.state === 'error') return V('error', null, null, 'Error', 'The patch service reports an error' + why);
         return V('error', null, null, 'Unknown', 'Unknown state' + (p.state !== 'unknown' ? ' "' + p.state + '"' : '') + why);
     }

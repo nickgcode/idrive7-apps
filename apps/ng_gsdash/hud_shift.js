@@ -85,7 +85,7 @@ class HudShift {
         this.cur = null;                                    // { id, style, labels, assets, ref, anim, sent }
         this.visible = false; this.lastRearm = -1e15;
         this.others = []; this.busyAt = -1e15; this.layerErr = ''; this.errCount = 0; this.refused = ''; this.noEffect = false;
-        this.hudState = ''; this.poll = null; this.pump = null; this.downAt = this.now();
+        this.hudState = ''; this.hudHolder = ''; this.hudReason = ''; this.layerState = ''; this.poll = null; this.pump = null; this.downAt = this.now();
     }
 
     update(s) {
@@ -133,6 +133,7 @@ class HudShift {
         });
         cr.on('layer', (ref, state, reason) => {
             if (this.cr !== cr || !this.cur || ref !== this.cur.ref) return;
+            this.layerState = state || '';
             if (state === 'error') { this.layerErr = reason || 'error'; this.log.warn('hud shift: layer error' + (reason ? ' (' + reason + ')' : '')); this._hide('layer error'); }
         });
         cr.on('refused', (op, ref, reason) => {
@@ -141,10 +142,10 @@ class HudShift {
             this.log.warn('hud shift: refused ' + this.refused);
             if (this.cur && (ref === this.cur.ref || this.cur.assets.indexOf(ref) >= 0)) { this.layerErr = this.refused; this._hide('refused'); }
         });
-        cr.on('target', (name, state) => {
+        cr.on('target', (name, state, holder, reason) => {
             if (this.cr !== cr || name !== TARGET) return;
-            if (state !== this.hudState) this.log.info('hud shift: hud ' + state);
-            this.hudState = state || '';
+            if (state !== this.hudState || (holder || '') !== this.hudHolder) this.log.info('hud shift: hud ' + state + (holder ? ' holder ' + holder : '') + (reason ? ' (' + reason + ')' : ''));
+            this.hudState = state || ''; this.hudHolder = holder || ''; this.hudReason = reason || '';
         });
         cr.on('status', (text) => {
             if (this.cr !== cr) return;
@@ -263,7 +264,10 @@ class HudShift {
         [a, g].forEach((r) => { if (r) cur.assets.push(r); });
         if (!a || !g) { this._dropAll(cur); return false; }
         const B = HC.BAND;
-        const ref = cr.effect({ target: TARGET, klass: KLASS, z: HUD_Z, exclusive: false, contend: true, visible: false,
+        // 0.8.4: made visible at once, as G's TV's HUD video is (it wants the HUD from its first
+        // message; u_fresh 0 keeps it clear until the first values)
+        this.layerState = 'new';
+        const ref = cr.effect({ target: TARGET, klass: KLASS, z: HUD_Z, exclusive: false, contend: true, visible: true,
             x: B.x, y: B.y, w: B.w, h: B.h, fs: HC.fragment(style, cells) });
         if (!ref) { this.log.warn('hud shift: effect layer refused by the client'); this._dropAll(cur); return false; }
         cur.ref = ref;
@@ -327,8 +331,14 @@ class HudShift {
         if (this.noEffect) return { kind: 'none', text: 'Update Cluster renderer' };
         const why = this.why || this._why();
         if (!why && this.visible) {
-            if (this.hudState === 'parked' || this.hudState === 'waiting') return { kind: 'wait', text: 'Waiting - car\'s HUD in front' };
-            return { kind: 'on', text: 'Shown on the HUD' };
+            // as G's TV's HUD status: the layer or the target shown counts first
+            if (this.layerState === 'shown' || this.hudState === 'shown' || this.hudState === 'lingering') return { kind: 'on', text: 'Shown on the HUD' };
+            if (this.hudState === 'unavailable') return { kind: 'none', text: 'HUD unavailable' };
+            if (/scene id/.test(this.hudReason)) return { kind: 'wait', text: 'Waiting - cluster panel shares the HUD' };
+            if (this.hudState === 'parked' || this.hudState === 'waiting') {
+                return { kind: 'wait', text: this.hudHolder === 'foreign' ? 'Waiting - another program holds the HUD' : 'Waiting - car\'s HUD content in front' };
+            }
+            return { kind: 'wait', text: 'Asking for the HUD' };
         }
         const TXT = { 'stale values': 'Hidden - signal delayed', 'no rpm signal': 'Hidden - no rpm signal', 'demo data': 'Hidden - demo data',
             'hud in use': 'Waiting - HUD in use', 'renderer error': 'Renderer refused the lights', assets: 'Lights failed to load',

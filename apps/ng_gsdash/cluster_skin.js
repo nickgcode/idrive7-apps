@@ -45,6 +45,8 @@ const CL = require('./cluster_logo');
 const TARGET = 'panel', KLASS = 'content', SKIN_Z = 90;
 const SPEED_IFACE = 'de.bmw.infotainment.vehicle.Vehicle2';
 const LAYOUT = 'SPORT';                                  // the cluster layout the geometry was measured on
+// 0.8.4: the drive modes that show the cluster's Sport layout (Sport and Sport+ share it)
+const LAYOUT_MODES = ['SPORT', 'SPORT+'];
 const PARKED_KMH = 1;
 const POLL_MS = 1000, PUMP_MS = 33, PUSH_MS = 33, REARM_MS = 60, FRESH_HOLD = 200, FRESH_FADE = 40, STALE_MS = 600;
 const LIVE_MS = 300, RESHOW_MS = 500;
@@ -79,7 +81,8 @@ function blocker(s) {
         if (d.speed >= PARKED_KMH) return 'moving';
         if (d.stage === 'D' || d.stage === 'R' || (SK.isNum(d.gear) && (d.gear > 0 || d.gear === -1) && !d.gearGuessed)) return 'in gear';
     }
-    if (d.driveMode !== LAYOUT) return 'not Sport';
+    if (!d.driveMode) return 'no drive mode';
+    if (LAYOUT_MODES.indexOf(d.driveMode) < 0) return 'not Sport';
     return '';
 }
 /** moving, the values' age: '' or 'stale values' (now: ms, the clock s.at is on) */
@@ -409,7 +412,7 @@ class ClusterSkin {
             const n = this.cur ? META.looks[this.cur.id].name : '';
             return { kind: 'on', text: 'Shown - ' + n };
         }
-        const TXT = { moving: 'Stock while driving', 'stale values': 'Stock - signal delayed', 'in gear': 'Stock while in gear', 'not Sport': 'Stock - Sport layout only',
+        const TXT = { moving: 'Stock while driving', 'stale values': 'Stock - signal delayed', 'in gear': 'Stock while in gear', 'not Sport': 'Stock - switch to Sport mode', 'no drive mode': 'Stock - drive mode unknown',
             'no speed signal': 'Stock - no speed signal', 'demo data': 'Stock - demo data', 'panel in use': 'Waiting - panel in use',
             'renderer error': 'Renderer refused the skin', assets: 'Skin failed to load', 'no update': 'Stock' };
         return { kind: why === 'renderer error' || why === 'assets' ? 'error' : 'wait', text: TXT[why] || 'Stock' };
@@ -417,5 +420,5 @@ class ClusterSkin {
 }
 const SHORT_ERR = { missing: 'Needs Cluster renderer', noclient: 'Update Cluster renderer', untrusted: 'Renderer not trusted', load: 'Renderer failed to load' };
 
-module.exports = { ClusterSkin, blocker, staleness, values, shownSpeed, panelLayers, LOOK_SKIN, TARGET, KLASS, SKIN_Z, LAYOUT, PARKED_KMH,
+module.exports = { ClusterSkin, blocker, staleness, values, shownSpeed, panelLayers, LOOK_SKIN, TARGET, KLASS, SKIN_Z, LAYOUT, LAYOUT_MODES, PARKED_KMH,
     POLL_MS, PUMP_MS, PUSH_MS, REARM_MS, FRESH_HOLD, FRESH_FADE, STALE_MS, LIVE_MS, RESHOW_MS, HOLD_MS, SPEED_PCT, SPEED_ADD };

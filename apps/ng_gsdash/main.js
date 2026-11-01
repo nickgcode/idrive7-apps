@@ -86,7 +86,7 @@ const lookOf = (id) => LOOKS.find((l) => l.id === id) || LOOKS[0];
 const MPH = 1.609344;
 const TRAIL_MS = 3000;
 const OIL_READY_F = 194, COOLANT_READY_F = 176, HYST_F = 4;
-const VERSION = '0.8.3';
+const VERSION = '0.8.4';
 // Warm-up: the rev limit is COLD_RPM at or below COLD_F oil, rising (250 rpm steps) to WARM_REDLINE at
 // the "oil temp for full revs" setting. Auto-jump: AUTO_MS after READY it opens Drive.
 const COLD_RPM = 4000, COLD_F = 104, WARM_REDLINE = 6000, OIL_FULL_F = 180, AUTO_MS = 5000;
