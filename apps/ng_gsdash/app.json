@@ -2,7 +2,7 @@
   "id": "ng_gsdash",
   "title": "G's Dash",
   "description": "Driver display and car hub in seven looks (Simple, M Style, GT, Heritage, Flight, Digital '84, Sim Racing). Swipe between Showcase (the car, Spotify or a clock), Drive (opens first; shift lights, gear, rpm, speed, g-meter, drive mode badge, oil / coolant in °F), Warm-up (warm-up rev limit), G-force (peak hold) and Tires (TPMS). Optional Spotify panel (art, previous / play-pause / next, seek; own QR sign-in, Spotify Premium and mgu-uplink internet). Optional Cluster map setting: CarPlay's map on the instrument cluster through the separately installed Waze on cluster tool (off unless installed and turned on)",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "vendor": "ng",
   "loggingId": "OAN1",
   "iconGlyph": "gauge",
@@ -79,8 +79,6 @@
      "steps": [5500, 6000, 6500, 7000, 7500]},
     {"key": "shiftBefore", "label": "Shift point before redline", "type": "number", "unit": "rpm", "default": 300,
      "steps": [0, 100, 200, 300, 500, 800]},
-    {"key": "lights", "label": "Shift light style", "type": "choice", "default": "f1",
-     "options": [["m", "M (green-yellow-red)"], ["f1", "Race (green-red-blue)"], ["mono", "Theme colour"]]},
     {"key": "oilReady", "label": "Oil ready at", "type": "number", "unit": "°F", "default": 194, "markDefault": true,
      "steps": [160, 165, 170, 175, 180, 185, 190, 194, 200, 205, 210]},
     {"key": "coolantReady", "label": "Coolant ready at", "type": "number", "unit": "°F", "default": 176, "markDefault": true,
@@ -88,10 +86,8 @@
     {"key": "oilFullRevs", "label": "Oil temp for full revs", "type": "number", "unit": "°F", "default": 180, "markDefault": true,
      "steps": [160, 165, 170, 175, 180, 185, 190, 194, 200]},
     {"key": "gScale", "label": "G-meter size", "type": "number", "unit": "g", "default": 1.5, "steps": [1.0, 1.5, 2.0]},
-    {"key": "theme", "label": "Simple look colours", "type": "choice", "default": "m_tricolour",
-     "options": [["m_red", "M Red"], ["m_tricolour", "M Tricolour"], ["ice", "Ice White"], ["amber", "Night Amber"]]},
     {"key": "panel", "label": "Right panel", "type": "choice", "default": "g",
      "options": [["g", "G-meter and peaks"], ["spotify", "Spotify (touch controls)"]]}
   ],
-  "retiredSettings": ["demo", "layout", "renderer", "speedUnit", "spotifyPoll", "showBadge"]
+  "retiredSettings": ["demo", "layout", "renderer", "speedUnit", "spotifyPoll", "showBadge", "lights", "theme"]
 }

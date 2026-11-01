@@ -34,7 +34,7 @@ function geo(S) {
     return { ex, bottom, ledY, ledH, barY, barH, top, rx: 1112, cx: 796 };
 }
 
-/** The LED strip: housing, N round-ended LEDs with glow, colours from the "lights" setting. */
+/** The LED strip: housing, N round-ended LEDs with glow, colours from the fixed Race light style. */
 function leds(cv, S, x, y, w, h) {
     const st = L.lights(S, N_LED, YEL);
     cv.roundRect(x, y, w, h, 10, '#0b0d10');

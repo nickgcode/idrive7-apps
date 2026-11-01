@@ -49,7 +49,7 @@ const LIGHTS = {
     f1: ['#2fd27a', '#2fd27a', '#ff2a2a', '#ff2a2a', '#2a7dff', '#2a7dff'],
 };
 /**
- * The shift lights' state for n lights over the last `range` rpm to the shift point (setting "lights"):
+ * The shift lights' state for n lights over the last `range` rpm to the shift point (the style: main.js LIGHT_STYLE, Race since 0.6.0):
  * { cols[i], part[i] 0..1 (a light fades in as rpm crosses it), strobe, flash (strobe colour or null this frame) }.
  */
 function lights(S, n, mono) {

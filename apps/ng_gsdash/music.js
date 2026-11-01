@@ -388,7 +388,7 @@ class Music {
     }
 
     /**
-     * The Spotify page (full screen, from Settings or the panel's Sign in): the QR code when it's
+     * The Spotify page (full screen, from Options or the panel's Sign in): the QR code when it's
      * needed, what to do, the state, and the refresh rate. A = { x, y, w, h } below the page's header.
      */
     page(cv, S, lk, A) {
@@ -447,7 +447,7 @@ class Music {
         } else if (st === 'ok' || st === 'idle') {
             say('', this.pb ? (this.pb.title || 'Unknown track') + (this.pb.artist ? ' - ' + this.pb.artist : '') : 'Nothing playing right now', t.text);
             say('', this.pb && this.pb.device ? 'Playing on ' + this.pb.device : 'Start Spotify on your phone or any device.', t.dim, 20);
-            say('', 'The Showcase screen shows it, and Drive with Settings > Right panel: Spotify.', t.dim, 20);
+            say('', 'The Showcase screen shows it, and Drive with Options > Theme > Right panel: Spotify.', t.dim, 20);
         } else if (st === 'offline') {
             say('', 'G\'s Dash talks to Spotify over the internet (mgu-uplink).', t.dim, 20);
             say('1', 'Turn on the phone\'s hotspot or the Wi-Fi uplink in the Store.', t.text, 22);

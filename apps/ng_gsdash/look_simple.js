@@ -1,7 +1,7 @@
 'use strict';
 /**
- * Simple - G's Dash's original look (0.2): the kit's gauges in the "Colours" theme (M Tricolour,
- * M Red, Ice White, Night Amber). rpm dial, speed over a big gear, friction circle, warm-up chips.
+ * Simple - G's Dash's original look (0.2): the kit's gauges in the "Colours" theme's M Tricolour.
+ * rpm dial, speed over a big gear, friction circle, warm-up chips.
  */
 const G = require('./kit/gauges');
 const themes = require('./kit/themes');
@@ -44,8 +44,9 @@ function modeChip(cv, t, cx, y, S) {
 module.exports = {
     id: 'simple',
     name: 'Simple',
-    blurb: 'The original: clean dials in your choice of colours',
-    palette: (settings) => themes.theme(settings.get('theme')),
+    blurb: 'The original: clean dials in M Tricolour',
+    // M Tricolour, fixed since 0.6.0 (the "Simple look colours" setting went)
+    palette: themes.theme('m_tricolour'),
     ui: { txt: 'bold', num: 'num', size: 20, spacing: 1.5, upper: true, radius: 12 },
 
     /** The settings gallery card's picture. */

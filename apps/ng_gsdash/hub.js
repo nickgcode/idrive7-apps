@@ -370,7 +370,7 @@ function showcase(cv, st, S, music, lk, gr, img, now) {
         st.txt(cv, c.ampm, x0 + tw + 14, by, 30, t.dim);
         st.txt(cv, c.date, cx, by + 58, 22, t.dim, { align: 'center' });
         if (music) {
-            const s = music.status, note = s === 'noauth' || s === 'reauth' ? 'Spotify: not signed in (Settings > Spotify)' : s === 'offline' ? 'Spotify: no internet' : '';
+            const s = music.status, note = s === 'noauth' || s === 'reauth' ? 'Spotify: not signed in (Options > Spotify)' : s === 'offline' ? 'Spotify: no internet' : '';
             if (note) st.txt(cv, note, cx, top + h - 18, 15, withAlpha(t.dim, 0.8), { align: 'center' });
         }
     }

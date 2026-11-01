@@ -16,14 +16,16 @@
  *     Simple (the original), M Style, GT, Heritage, Flight, Digital '84, Sim Racing
  *   - setting "panel": Spotify instead of the g-meter (music.js, G's Music's code shared in by the
  *     build): what plays, art, previous / play-pause / next, a bar to tap or drag; its own QR sign-in
- *   - a hidden diagnostics page (tap "G's Dash <version>" in the settings' header 5 times): the drive
+ *   - a hidden diagnostics page (tap "G's Dash <version>" in the Options header 5 times): the drive
  *     mode field's raw values as the car sends them, the TPMS raw values and the car's units, and
  *     what the head unit's catalog says (diag.js)
- *   - full screen, touch, GPU renderer (app.json "fullscreen": true): the G button opens Settings: the
- *     looks as a gallery (each card drawn once in software into a picture, so the looks' big fonts
- *     don't fill the renderer's shared glyph texture) and the settings as rows. No demo data.
+ *   - full screen, touch, GPU renderer (app.json "fullscreen": true): the G button opens Options
+ *     (Theme, Engine & warm-up, G-meter & session, Spotify & cluster map); Theme has the looks as a
+ *     gallery (each card drawn once in software into a picture, so the looks' big fonts don't fill the
+ *     renderer's shared glyph texture) and the right panel. Shift lights always in the Race colours,
+ *     Simple always in M Tricolour (0.6.0 took those settings out). No demo data.
  *   - a home-screen widget (app.json startWidget): the G logo, large and centred (widget_logo.js).
- *   - Settings > Cluster map (cluster.js): CarPlay's map on the instrument cluster, on / off, through the
+ *   - Options > Cluster map (cluster.js): CarPlay's map on the instrument cluster, on / off, through the
  *     separately installed "Waze on cluster" tool's patch service. Off unless the tool is installed and
  *     the user turns it on (with a confirmation); G's Dash stores nothing for it.
  *
@@ -52,7 +54,7 @@ const lookOf = (id) => LOOKS.find((l) => l.id === id) || LOOKS[0];
 const MPH = 1.609344;
 const TRAIL_MS = 3000;
 const OIL_READY_F = 194, COOLANT_READY_F = 176, HYST_F = 4;
-const VERSION = '0.5.2';
+const VERSION = '0.6.0';
 // Warm-up: the rev limit is COLD_RPM at or below COLD_F oil, rising (250 rpm steps) to WARM_REDLINE at
 // the "oil temp for full revs" setting. Auto-jump: AUTO_MS after READY it opens Drive.
 const COLD_RPM = 4000, COLD_F = 104, WARM_REDLINE = 6000, OIL_FULL_F = 180, AUTO_MS = 5000;
@@ -66,23 +68,22 @@ const toF = (c) => (L.isNum(c) ? c * 9 / 5 + 32 : c);
 // for its pull-down), so nothing to tap sits higher than BOX_OWN.
 const BOX_OWN = 40, BOX_STD = 52, BOX_H = 456;
 // the G button (full screen): opens the settings; GB_W x GB_H page px in the content's bottom-right
-// corner (~126 x 89 screen px), every look keeps that corner free. The settings page's header row:
+// corner (~126 x 89 screen px), every look keeps that corner free. The Options pages' header row:
 // Back (to the dash) at the left, the G (lit) at the right, page y HEAD_Y .. HEAD_Y + HEAD_H.
 const GB_W = 108, GB_H = 76, HEAD_Y = 40, HEAD_H = 64, SET_Y = 118;
 
-/* rows of the settings page: key, short label, value text */
-const ROWS = [
-    ['theme', 'Simple colours', (v) => ({ m_red: 'M Red', m_tricolour: 'M Tricolour', ice: 'Ice White', amber: 'Night Amber' })[v] || v],
-    ['panel', 'Right panel', (v) => (v === 'spotify' ? 'Spotify' : 'G-meter')],
-    ['lights', 'Shift lights', (v) => ({ m: 'M', f1: 'Race', mono: 'Look colour' })[v] || v],
+/* Options page rows (stepped with - / +): key, label, value text */
+const ENGINE = [
     ['redline', 'Redline', (v) => v + ' rpm'],
-    ['shiftBefore', 'Shift point', (v) => (v ? v + ' before' : 'At redline')],
+    ['shiftBefore', 'Shift point, before redline', (v) => (Number(v) ? v + ' rpm' : 'At redline')],
     ['oilFullRevs', 'Oil temp for full revs', (v) => v + ' °F'],
     ['oilReady', 'Oil ready', (v) => v + ' °F'],
     ['coolantReady', 'Coolant ready', (v) => v + ' °F'],
-    ['gScale', 'G-meter scale', (v) => Number(v).toFixed(1) + ' g'],
 ];
-const TAPS = 5, TAP_MS = 3000;          // the diagnostics page: taps on the version in the settings' header
+const GSCALE = ['gScale', 'G-meter scale', (v) => Number(v).toFixed(1) + ' g'];
+// fixed since 0.6.0 (the settings went): the shift lights' Race colours, the Simple look's M Tricolour
+const LIGHT_STYLE = 'f1';
+const TAPS = 5, TAP_MS = 3000;          // the diagnostics page: taps on the version in the Options header
 
 mgu.run({
     async start(ctx) {
@@ -138,20 +139,21 @@ mgu.run({
             return ready[key];
         };
 
-        // the page: 0 = the hub (screen scr: HUB.SCREENS), 1 = settings, 2 = Spotify, 3 = diagnostics,
-        // 4 = Cluster map; the
+        // the page: 0 = the hub (screen scr: HUB.SCREENS), 1 = Options (the G), 2 = Spotify, 3 = diagnostics,
+        // 4 = Cluster map, 5 = Theme (2..5 go back to Options); the
         // bar's Reset moves to the settings page (no bar: the page reaches the screen's bottom)
         let page = 0, armed = 0, gDown = 0, downKey = '';
         const SCR = (id) => HUB.SCREENS.findIndex((x) => x[0] === id);
         let scr = SCR(HUB.HOME);                 // the hub screen (HUB.SCREENS index): Drive, not index 0
         const go = (i) => { scr = i; };
         if (ctx.hideButton) ctx.hideButton('BTN_RESET');
-        // the dash again: the settings' Back, the G there, the controller pushed left (ctx.onBack), and
+        // the dash again: Back on Options, the G there, the controller pushed left (ctx.onBack), and
         // whenever the screen is left (the HMI's back arrow / BACK closes it; it comes back on the hub)
         const toDash = () => { if (page === 0) return false; if (ask) { ask = null; return true; } page = page >= 2 ? 1 : 0; return true; };
         if (ctx.onBack) ctx.onBack(toDash);
         if (ui.onVisible) ui.onVisible((st, on) => { if (!on) { page = 0; taps = []; ask = null; } });
-        // settings 0.4.0 had and 0.5.0 dropped (demo, layout, renderer, speedUnit, spotifyPoll, showBadge)
+        // settings 0.4.0 had and 0.5.0 dropped (demo, layout, renderer, speedUnit, spotifyPoll, showBadge),
+        // and 0.6.0's (lights: the Race colours, LIGHT_STYLE; theme: Simple in M Tricolour, look_simple.js)
         // are app.json "retiredSettings": the kit deletes saved values for them at start (mgu.js Settings)
         /** A press on the G (or Back): shown pressed for a moment, then the page changes. */
         const press = (to, key) => { gDown = Date.now(); downKey = key; setTimeout(() => { page = to; }, 140); };
@@ -213,7 +215,7 @@ mgu.run({
             }
             return was.on || was.held;
         });
-        // the diagnostics page: TAPS taps on "G's Dash <version>" in the settings' header within TAP_MS
+        // the diagnostics page: TAPS taps on "G's Dash <version>" in the Options header within TAP_MS
         let taps = [], verRect = null;
         if (ctx.onTap) ctx.onTap((x, y) => {
             const r = verRect;
@@ -235,7 +237,7 @@ mgu.run({
                 rpm: d.rpm, speed: speedOf(d.speed), unit: 'MPH', imperial: true, speedMax: 180,
                 gear: d.gear, stage: d.stage, guessed: !!d.gearGuessed, gearText: L.gearText(d.gear, d.stage),
                 redline, shift, range: 2000, maxRpm: Math.ceil((redline + 500) / 1000) * 1000,
-                strobe, blink: Math.floor(now / 120) % 2 === 0, lightStyle: settings.get('lights'),
+                strobe, blink: Math.floor(now / 120) % 2 === 0, lightStyle: LIGHT_STYLE,
                 gLat: d.gLat, gLong: d.gLong, gMax: Number(settings.get('gScale')) || 1.5,
                 trail: trail.map((p) => [p[1], p[2]]),
                 peak: { acc: peak.acc, brk: peak.brk, lat: peak.lat, rpm: peak.rpm, speed: speedOf(peak.speed) },
@@ -354,7 +356,7 @@ mgu.run({
             L.badge(cv, r.x + (r.w - bw) / 2, r.y + (r.h + h) / 2, h, lk.badgeLetter);
         }
 
-        /** The settings page's header row: Back to the dash (left), the page's name, the G lit (right, also back). */
+        /** A page's header row: Back (left: to the dash from Options, else to Options), the page's name, the G lit (right: the dash). */
         function header(cv, S, lk, lbl, card, title, backTo) {
             const t = S.t, u = lk.ui, back = backTo || 0;
             const bx = S.x, bw = 210, by = HEAD_Y;
@@ -362,10 +364,10 @@ mgu.run({
             const cy = by + HEAD_H / 2;
             cv.line(bx + 36, cy - 11, bx + 24, cy, 3, t.text);
             cv.line(bx + 24, cy, bx + 36, cy + 11, 3, t.text);
-            const bt = back ? 'Settings' : 'Dash';
+            const bt = back ? 'Options' : 'Dash';
             cv.text(u.upper ? bt.toUpperCase() : bt, bx + 52, cy + 9, u.size + 4, t.text, { font: u.txt, spacing: u.upper ? u.spacing : 0, literal: true });
             cv.target(bx, by, bw, HEAD_H, () => press(back, 'back'), 'back', u.radius);
-            lbl(title || 'Settings', bx + bw + 32, cy + 11, 30, t.text);
+            lbl(title || 'Options', bx + bw + 32, cy + 11, 30, t.text);
             const gr = { x: S.x + S.w - GB_W, y: by, w: GB_W, h: HEAD_H };
             const ver = "G's Dash " + VERSION, vw = cv.textWidth(u.upper ? ver.toUpperCase() : ver, 16, { font: u.lbl || u.txt, spacing: u.upper ? u.spacing : 0, literal: true });
             lbl(ver, gr.x - 24, cy + 7, 16, t.dim, { align: 'right' });
@@ -375,72 +377,162 @@ mgu.run({
             cv.target(gr.x, gr.y, gr.w, gr.h, () => press(0, 'g-set'), 'g-set', u.radius);
         }
 
-        /** The settings page: looks as a gallery (left), the other settings as rows (right). */
-        function settingsPage(cv, S, lk) {
-            const t = S.t, u = lk.ui, cur = lk.id;
-            const lbl = (s, x, y, size, c, o) => cv.text(u.upper ? s.toUpperCase() : s, x, y, size, c, Object.assign({ font: u.lbl || u.txt, spacing: u.upper ? u.spacing : 0, literal: true }, o || {}));
-            const card = lk.card || ((c, th, x, y, w, h, on) => {
-                c.roundRect(x, y, w, h, u.radius, on ? L.withAlpha(th.sel || th.accent, 0.16) : L.withAlpha('#ffffff', 0.05));
-                c.strokeRoundRect(x, y, w, h, u.radius, on ? 2.5 : 1, on ? th.sel || th.accent : L.withAlpha('#ffffff', 0.14));
+        /* ---------- Options (the G) and Theme ---------- */
+        // the look gallery's card size: the same on Options (the current look) and Theme (all), so each
+        // card is drawn once (cardImage)
+        const TILE_W = 263, TILE_H = 190, ROW_H = 64, ROW_GAP = 19;
+        const valueText = (u, s2) => (u.upper ? s2.toUpperCase() : s2);
+        /** A chevron (>) at (x, y), size k. */
+        const chevron = (cv, x, y, k, c) => { cv.line(x - k / 2, y - k, x + k / 2, y, 2.5, c); cv.line(x + k / 2, y, x - k / 2, y + k, 2.5, c); };
+        /** A row's two lines: the setting (small, dim), its value (larger); sub: a dim note after the value. */
+        function rowText(cv, S, lk, x, y, w, h, label, value, opts) {
+            const t = S.t, u = lk.ui, o = opts || {};
+            const lbl = lblOf(cv, u);
+            lbl(label, x + 18, y + 24, Math.round(u.size * 0.72), t.dim);
+            const vs = u.size + 2, vf = { font: u.txt, spacing: u.upper ? u.spacing * 0.6 : 0, literal: true };
+            const v = fitText(cv, valueText(u, value), vs, w - 36, vf);
+            cv.text(v, x + 18, y + h - 12, vs, o.warn ? t.crit : t.text, vf);
+            if (o.sub) cv.text(valueText(u, o.sub), x + 18 + cv.textWidth(v, vs, vf) + 12, y + h - 13, 14, t.dim, { font: u.lbl || u.txt, spacing: u.upper ? u.spacing : 0, literal: true });
+        }
+        /**
+         * A number setting as a row with - and + (each the row's full height, 76 page px wide, ~88 x 75
+         * screen px): one step down / up the setting's steps (app.json), stopping at the ends.
+         */
+        function stepRow(cv, S, lk, x, y, w, h, row) {
+            const t = S.t, u = lk.ui, card = cardOf(lk), key = row[0], it = settings.item(key) || {};
+            const steps = it.steps || [], v = Number(settings.get(key));
+            let i = steps.indexOf(v);
+            if (i < 0) i = steps.reduce((b, s2, k) => (Math.abs(s2 - v) < Math.abs(steps[b] - v) ? k : b), 0);
+            const bw = 76;
+            card(cv, t, x, y, w, h, false);
+            rowText(cv, S, lk, x, y, w - 2 * bw, h, row[1], row[2](settings.get(key)), { sub: it.markDefault && v === it.default ? 'default' : '' });
+            [[-1, x + w - 2 * bw], [1, x + w - bw]].forEach((b) => {
+                const to = i + b[0], ok = to >= 0 && to < steps.length, bx = b[1], cx = bx + bw / 2, cy = y + h / 2, k2 = 'st:' + key + (b[0] < 0 ? '-' : '+');
+                cv.fillRect(bx, y + 12, 1, h - 24, L.withAlpha('#ffffff', 0.12));
+                if (isDown(k2)) cv.roundRect(bx + 4, y + 4, bw - 8, h - 8, u.radius, L.withAlpha(t.sel || t.accent, 0.28));
+                const c = ok ? t.text : L.withAlpha(t.dim, 0.4);
+                cv.line(cx - 12, cy, cx + 12, cy, 3, c);
+                if (b[0] > 0) cv.line(cx, cy - 12, cx, cy + 12, 3, c);
+                if (ok) cv.target(bx, y, bw, h, () => { gDown = Date.now(); downKey = k2; settings.set(key, steps[to]); }, k2, u.radius);
             });
-            const x0 = S.x, y0 = S.y, top = y0 + 34;
-            header(cv, S, lk, lbl, card);
-            // gallery: 4 x 2 cards
-            const gw = 948, cols = 4, cw = (gw - (cols - 1) * 16) / cols, ch = (S.h - 34 - 16) / 2;
-            lbl('Look', x0, y0 + 20, 18, t.dim);
+        }
+        /** A row that opens a page: the label, its state line (tone: a dot in that colour), a chevron. */
+        function linkRow(cv, S, lk, x, y, w, h, key, label, value, fn, tone) {
+            const t = S.t, u = lk.ui;
+            cardOf(lk)(cv, t, x, y, w, h, isDown(key));
+            rowText(cv, S, lk, x + (tone ? 18 : 0), y, w - 48 - (tone ? 18 : 0), h, label, value);
+            if (tone) cv.circle(x + 22, y + h - 20, 6, tone);
+            chevron(cv, x + w - 26, y + h / 2, 9, t.dim);
+            cv.target(x, y, w, h, fn, key, u.radius);
+        }
+        const clusterTone = (k) => (k === 'on' ? HUB.GREEN : k === 'pending' || k === 'busy' ? '#ffb020' : k === 'conflict' || k === 'error' ? '#ff3b30' : null);
+
+        /**
+         * Options (the G): three columns. Theme: the current look's card and the right panel, a tap
+         * opens the Theme page. Engine & warm-up: five stepped rows. G-meter & session, then Spotify &
+         * cluster map: the g-meter scale, the session peaks' reset (tap twice), the Spotify and Cluster
+         * map pages. "G's Dash <version>" in the header: the hidden diagnostics page (TAPS taps).
+         */
+        function optionsPage(cv, S, lk) {
+            const t = S.t, u = lk.ui, lbl = lblOf(cv, u), card = cardOf(lk), acc = t.sel || t.accent;
+            header(cv, S, lk, lbl, card, 'Options');
+            const x0 = S.x, top = S.y + 34, gap = 32, cw = (S.w - 2 * gap) / 3, ch = 4 * (ROW_H + ROW_GAP) + ROW_H;
+            const slot = (k) => top + k * (ROW_H + ROW_GAP);
+            // 1. Theme
+            lbl('Theme', x0, S.y + 20, 18, t.dim);
+            const down = isDown('opt:theme');
+            card(cv, t, x0, top, cw, ch, down);
+            const tx = x0 + (cw - TILE_W) / 2, ty = top + 22, li = LOOKS.indexOf(lk);
+            const im = cardImage(lk, li, TILE_W, TILE_H, cv.textScale || 1);
+            if (im) cv.image(im, tx, ty, TILE_W, TILE_H);
+            cv.strokeRoundRect(tx, ty, TILE_W, TILE_H, 10, 1, L.withAlpha('#ffffff', 0.12));
+            lbl('Look', x0 + 24, ty + TILE_H + 40, Math.round(u.size * 0.72), t.dim);
+            cv.text(valueText(u, lk.name), x0 + 24, ty + TILE_H + 74, u.size + 6, t.text, { font: u.txt, spacing: u.upper ? u.spacing * 0.6 : 0, literal: true });
+            lbl('Right panel', x0 + cw / 2 + 8, ty + TILE_H + 40, Math.round(u.size * 0.72), t.dim);
+            cv.text(valueText(u, panelOn() ? 'Spotify' : 'G-meter'), x0 + cw / 2 + 8, ty + TILE_H + 74, u.size + 6, t.text, { font: u.txt, spacing: u.upper ? u.spacing * 0.6 : 0, literal: true });
+            // the way in: a lit bar along the card's bottom
+            const by = top + ch - 62;
+            cv.roundRect(x0 + 16, by, cw - 32, 46, u.radius, L.withAlpha(acc, down ? 0.34 : 0.18));
+            lbl('Change theme', x0 + 36, by + 31, u.size, t.text);
+            chevron(cv, x0 + cw - 44, by + 23, 9, t.text);
+            cv.target(x0, top, cw, ch, () => press(5, 'opt:theme'), 'opt:theme', u.radius);
+            // 2. Engine & warm-up
+            const x1 = x0 + cw + gap;
+            lbl('Engine & warm-up', x1, S.y + 20, 18, t.dim);
+            ENGINE.forEach((r, k) => stepRow(cv, S, lk, x1, slot(k), cw, ROW_H, r));
+            // 3. G-meter & session; Spotify & cluster map
+            const x2 = x1 + cw + gap;
+            lbl('G-meter & session', x2, S.y + 20, 18, t.dim);
+            stepRow(cv, S, lk, x2, slot(0), cw, ROW_H, GSCALE);
+            const live = Date.now() - armed < 5000, ry = slot(1);
+            card(cv, t, x2, ry, cw, ROW_H, false);
+            rowText(cv, S, lk, x2, ry, cw - 170, ROW_H, live ? 'Tap again to confirm' : 'Session peaks', live ? 'Reset all peaks?' : 'All g and top peaks', { warn: live });
+            const rb = { x: x2 + cw - 156, y: ry + 8, w: 144, h: ROW_H - 16 };
+            if (live) { cv.roundRect(rb.x, rb.y, rb.w, rb.h, u.radius, L.withAlpha(t.crit || '#ff3b30', 0.3)); cv.strokeRoundRect(rb.x, rb.y, rb.w, rb.h, u.radius, 2, t.crit || '#ff3b30'); }
+            else cv.roundRect(rb.x, rb.y, rb.w, rb.h, u.radius, L.withAlpha('#ffffff', 0.08));
+            lbl(live ? 'Confirm' : 'Reset', rb.x + rb.w / 2, rb.y + rb.h / 2 + 8, u.size, live ? t.text : t.text, { align: 'center' });
+            cv.target(x2, ry, cw, ROW_H, () => {
+                if (Date.now() - armed < 5000) { armed = 0; reset(); log.info('peaks reset'); say('Peaks reset'); } else armed = Date.now();
+            }, 'opt:reset', u.radius);
+            lbl('Spotify & cluster map', x2, slot(3) - 14, 18, t.dim);
+            linkRow(cv, S, lk, x2, slot(3), cw, ROW_H, 'opt:spotify', 'Spotify', music.statusLine(), () => press(2, 'opt:spotify'));
+            const v = cmap.view();
+            linkRow(cv, S, lk, x2, slot(4), cw, ROW_H, 'opt:cluster', 'Cluster map', v.value, () => { ask = null; press(4, 'opt:cluster'); }, clusterTone(v.kind));
+        }
+
+        /**
+         * Theme: the looks as a gallery of cards, each drawn in its own look (a tap switches at once, the
+         * page itself redraws in it), and the right panel on Drive: the g-meter and peaks, or Spotify.
+         */
+        function themePage(cv, S, lk) {
+            const t = S.t, u = lk.ui, lbl = lblOf(cv, u), card = cardOf(lk), acc = t.sel || t.accent, cur = lk.id;
+            header(cv, S, lk, lbl, card, 'Theme', 1);
+            const x0 = S.x, top = S.y + 34, cols = 4, g = 16;
+            lbl('Look', x0, S.y + 20, 18, t.dim);
             LOOKS.forEach((l, i) => {
-                const cx = x0 + (i % cols) * (cw + 16), cy = top + Math.floor(i / cols) * (ch + 16), on = l.id === cur;
+                const cx = x0 + (i % cols) * (TILE_W + g), cy = top + Math.floor(i / cols) * (TILE_H + g), on = l.id === cur;
                 // each card in its own look (background, motif, name in its own type): a picture drawn once
                 // in software (cardImage), so the other looks' big fonts never reach the renderer's glyph texture
-                const im = cardImage(l, i, cw, ch, cv.textScale || 1);
-                if (im) cv.image(im, cx, cy, cw, ch);
+                const im = cardImage(l, i, TILE_W, TILE_H, cv.textScale || 1);
+                if (im) cv.image(im, cx, cy, TILE_W, TILE_H);
                 // the chosen one: a ring in this (the current) look's selection colour and a tick
                 if (on) {
-                    cv.strokeRoundRect(cx - 4, cy - 4, cw + 8, ch + 8, 14, 3, t.sel || t.accent);
-                    const kx = cx + cw - 30, ky = cy + ch - 32;
-                    cv.circle(kx, ky, 14, t.sel || t.accent);
+                    cv.strokeRoundRect(cx - 4, cy - 4, TILE_W + 8, TILE_H + 8, 14, 3, acc);
+                    const kx = cx + TILE_W - 30, ky = cy + TILE_H - 32;
+                    cv.circle(kx, ky, 14, acc);
                     cv.line(kx - 7, ky, kx - 2, ky + 6, 3, t.selText || '#ffffff');
                     cv.line(kx - 2, ky + 6, kx + 7, ky - 6, 3, t.selText || '#ffffff');
-                } else cv.strokeRoundRect(cx, cy, cw, ch, 10, 1, L.withAlpha('#ffffff', 0.12));
-                cv.target(cx, cy, cw, ch, () => { settings.set('look', l.id); }, 'look:' + l.id, 10);
+                } else cv.strokeRoundRect(cx, cy, TILE_W, TILE_H, 10, 1, L.withAlpha('#ffffff', 0.12));
+                cv.target(cx, cy, TILE_W, TILE_H, () => { settings.set('look', l.id); }, 'look:' + l.id, 10);
             });
-            // rows: two columns of six
-            const PER = 6, rx = x0 + gw + 32, rw = (1588 - rx - 16) / 2, rh = 54, gap = (S.h - 34 - PER * rh) / (PER - 1);
-            lbl('Settings', rx, y0 + 20, 18, t.dim);
-            const cells = ROWS.map((r) => ({ key: r[0], label: r[1], value: r[2](settings.get(r[0])) }));
-            const live = Date.now() - armed < 5000;
-            cells.push({ key: '_spotify', label: 'Spotify', value: music.statusLine(), open: true });
-            cells.push({ key: '_cluster', label: 'Cluster map', value: cmap.view().value, open: true });
-            cells.push({ key: '_reset', label: live ? 'Tap again to reset' : 'Session peaks', value: live ? 'Confirm' : 'Reset', warn: live });
-            cells.forEach((c, i) => {
-                const x = rx + Math.floor(i / PER) * (rw + 16), y = top + (i % PER) * (rh + gap);
-                if (!c.info) card(cv, t, x, y, rw, rh, false);
-                // two lines: the setting (small), its value; a tap / press steps to the next value
-                lbl(c.label, x + 16, y + 21, Math.round(u.size * 0.72), t.dim);
-                cv.text(u.upper ? c.value.toUpperCase() : c.value, x + 16, y + rh - 10, u.size + 1, c.warn ? t.crit : c.info ? t.dim : t.text,
-                    { font: u.txt, spacing: u.upper ? u.spacing * 0.6 : 0, literal: true });
-                if (c.info) return;
-                const ax = x + rw - 22, ay = y + rh / 2;
-                cv.line(ax - 5, ay - 8, ax + 3, ay, 2, t.dim);
-                cv.line(ax + 3, ay, ax - 5, ay + 8, 2, t.dim);
-                cv.target(x, y, rw, rh, () => {
-                    if (c.key === '_spotify') press(2, 'set:_spotify');
-                    else if (c.key === '_cluster') { ask = null; press(4, 'set:_cluster'); }
-                    else if (c.key === '_reset') {
-                        if (Date.now() - armed < 5000) { armed = 0; reset(); log.info('peaks reset'); } else armed = Date.now();
-                    } else settings.cycle(c.key);
-                }, 'set:' + c.key, u.radius);
+            // the right panel: two choices, the current one lit
+            const px = x0 + cols * TILE_W + (cols - 1) * g + 40, pw = S.x + S.w - px, ph = 132;
+            lbl('Right panel on Drive', px, S.y + 20, 18, t.dim);
+            [['g', 'G-meter', 'Live g-meter and session peaks'], ['spotify', 'Spotify', 'What plays, with touch controls']].forEach((o, i) => {
+                const oy = top + i * (ph + g), on = (panelOn() ? 'spotify' : 'g') === o[0];
+                if (on) { cv.roundRect(px, oy, pw, ph, u.radius, L.withAlpha(acc, 0.22)); cv.strokeRoundRect(px, oy, pw, ph, u.radius, 3, acc); } else card(cv, t, px, oy, pw, ph, false);
+                // a small glyph: rings for the g-meter, three bars for Spotify
+                const gx = px + 52, gy = oy + ph / 2, c = on ? t.text : t.dim;
+                if (o[0] === 'g') { cv.arc(gx, gy, 28, 30, 0, 360, c); cv.arc(gx, gy, 13, 15, 0, 360, c); cv.circle(gx + 9, gy - 6, 6, on ? acc : c); }
+                else [[-14, 34], [0, 50], [14, 26]].forEach((b) => cv.roundRect(gx + b[0] - 4, gy - b[1] / 2, 8, b[1], 4, c));
+                lbl(o[1], px + 104, oy + 56, u.size + 6, t.text);
+                cv.text(fitText(cv, o[2], 18, pw - 124), px + 104, oy + 92, 18, t.dim, { literal: true });
+                cv.target(px, oy, pw, ph, () => settings.set('panel', o[0]), 'panel:' + o[0], u.radius);
+            });
+            const ny = top + 2 * ph + g + 34;
+            ['Spotify also shows on the G-force page.', 'Showcase always shows Spotify.'].forEach((l2, k) => {
+                if (ny + k * 28 < S.y + S.h) cv.text(fitText(cv, l2, 18, pw), px, ny + k * 28, 18, t.dim, { literal: true });
             });
         }
 
         /*
          * A look's gallery card as a picture: recorded at the page's scale, played into a software canvas
          * at the pixels it is shown at (record.play), uploaded once (record.setImage). Redrawn only when
-         * its size, scale or the Simple colours change.
+         * its size or scale changes.
          */
         const cards = {};
         function cardImage(l, i, cw, ch, sc) {
-            const theme = l.id === 'simple' ? settings.get('theme') : '', key = [Math.round(cw), Math.round(ch), sc, theme].join('|');
+            const key = [Math.round(cw), Math.round(ch), sc].join('|');
             const id = IMG.card + i;
             if (cards[l.id] === key) return id;
             try {
@@ -685,9 +777,10 @@ mgu.run({
             const P = Object.assign({}, S, { y: SET_Y, h: reach - SET_Y - 6 });
             // the patch service's socket: open only while the Cluster map page is on screen
             if (page === 4 && visible()) cmap.open(); else { cmap.close(); ask = null; }
-            if (page === 1) settingsPage(cv, P, lk);
+            if (page === 1) optionsPage(cv, P, lk);
             else if (page === 2) spotifyPage(cv, P, lk);
             else if (page === 4) clusterPage(cv, P, lk);
+            else if (page === 5) themePage(cv, P, lk);
             else if (page === 3) diagPage(cv, P, lk);
             else {
                 const id = HUB.SCREENS[scr][0];
