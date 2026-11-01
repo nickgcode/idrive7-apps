@@ -192,8 +192,10 @@ function needleGlsl(n, N, on) {
  * The side's fragment shader for a look (meta from skin_looks.js). Everything that does not change per
  * frame is a constant here; the fixed cut-outs force alpha 0 again (they are 0 in the art already).
  */
-function fragment(meta, side) {
+function fragment(meta, side, dims) {
     const S = SIDES[side], cells = meta.cells[side], fm = meta.fill[S.main];
+    const D = dims || nominalDims();
+    const vat = (d) => 'vec3(' + d.map(f1).join(', ') + ')';
     const trail = (f) => (f && f.trail ? f.trail : [1, 0, 1]);
     const head = (f) => (f && f.head ? f.head : [0, 1]);
     const q = (f) => (f && f.q ? f.q : 0);
@@ -220,7 +222,20 @@ function fragment(meta, side) {
         'const vec2 FSZ = vec2(' + f1(Math.ceil(S.w / FIELD_K)) + ', ' + f1(Math.ceil(S.h / FIELD_K)) + ');',
         'const vec2 BSZ = vec2(' + f1(BAND_W) + ', ' + f1(BAND_ROWS) + ');',
         'const vec2 GSZ = vec2(' + f1(cells.atlas[0]) + ', ' + f1(cells.atlas[1]) + ');',
+        'const vec3 AAT = ' + vat(D.art) + ', BAT = ' + vat(D.band) + ', FAT = ' + vat(D.field) + ';',
+        'const float TILE = ' + f1(TILE) + ', TCOLS = ' + f1(ATLAS_W / TILE) + ';',
         'vec4 texel(sampler2D t, vec2 p, vec2 sz) { return texture2D(t, (floor(p) + 0.5) / sz); }',
+        '// 0.11.2: tiled (skin_assets.js pack): the sz picture\'s texel p, from its atlas (at: the',
+        '// atlas\' width, height, and its first tile row; the tile grid\'s slot numbers are its top-left texels)',
+        'vec4 tiled(sampler2D t, vec2 p, vec2 sz, vec3 at) {',
+        '    p = clamp(floor(p), vec2(0.0), sz - 1.0);',
+        '    vec2 tc = floor(p / TILE);',
+        '    vec4 ix = texture2D(t, (tc + 0.5) / at.xy);',
+        '    float k = floor(ix.r * 255.0 + 0.5) + floor(ix.g * 255.0 + 0.5) * 256.0;',
+        '    float row = floor((k + 0.5) / TCOLS);',
+        '    vec2 o = vec2(k - row * TCOLS, row) * TILE + vec2(0.0, at.z);',
+        '    return texture2D(t, (o + p - tc * TILE + 0.5) / at.xy);',
+        '}',
         'bool inRect(vec2 p, vec4 r) { return p.x >= r.x && p.y >= r.y && p.x < r.z && p.y < r.w; }',
         '// a capsule from A to B, w wide: anti-aliased coverage, or (hard 1) all or nothing',
         'float segCov(vec2 p, vec2 A, vec2 B, float w, float hard) {',
@@ -239,14 +254,14 @@ function fragment(meta, side) {
         '    if (F.x > F.y || sd < 0.0 || sd >= rows) return c;',
         '    float ends = hard > 0.5 ? step(F.x - 0.5, s) * step(s, F.y + 0.5) : clamp(s - F.x + 0.5, 0.0, 1.0) * clamp(F.y - s + 0.5, 0.0, 1.0);',
         '    if (ends <= 0.0) return c;',
-        '    vec4 b = texel(u_band, vec2(s, F.w + sd), BSZ);',
+        '    vec4 b = tiled(u_band, vec2(s, F.w + sd), BSZ, BAT);',
         '    float ds = abs(F.z - s), w = (tr.x + tr.y * exp(-ds / tr.z)) * ends * (1.0 - top);',
         '    if (add > 0.5) return min(c + (b.rgb + (b.a - b.rgb) * hd.x * exp(-ds / hd.y)) * w, 1.0);',
         '    return mix(c, b.rgb, b.a * w);',
         '}',
         'void main() {',
         '    vec2 q = floor(v_uv * SZ) + 0.5;',
-        '    vec4 art = texel(u_art, q, SZ);',
+        '    vec4 art = tiled(u_art, q, SZ, AAT);',
         '    float code = floor(art.a * 255.0 + 0.5);',
         '    float a = code < 128.0 ? code / 127.0 : 1.0;',
         '    float top = code < 128.0 ? 0.0 : (code - 128.0) / 127.0;',
@@ -286,7 +301,7 @@ function fillCall(U, rows, f, q, tr, hd, g) {
     const b0 = g === 1 ? 0 : SMALL_CODE;
     return [
         '        {',
-        '            vec4 fd = texel(u_field, floor((' + p + ') / ' + f1(FIELD_K) + '), FSZ);',
+        '            vec4 fd = tiled(u_field, floor((' + p + ') / ' + f1(FIELD_K) + '), FSZ, FAT);',
         '            float b = floor(fd.b * 255.0 + 0.5) - ' + f1(b0) + ';',
         '            if (b >= 0.0 && b < ' + f1(rows * 2) + ') {',
         '                float s = (floor(fd.r * 255.0 + 0.5) + floor(fd.g * 255.0 + 0.5) * 256.0) / ' + f1(S_SCALE) + ';',
@@ -309,5 +324,26 @@ function reservedUses(src) {
     return RESERVED.filter((n) => new RegExp('(^|[^A-Za-z0-9_])' + n + '(?![A-Za-z0-9_])').test(s));
 }
 const FIELD_K = 2;                                        // 0.8.4: the field's texels are 2x2 pixels (skin_assets.js)
-module.exports = { FIELD_K, GEOM, PANEL_W, PANEL_H, REGION_W, REGION_H, SIDES, BAND_W, BAND_ROWS, MAIN_ROWS, SMALL_ROW, SMALL_ROWS, ALT_ROW,
+/**
+ * 0.11.2: the art, band and field go to the cluster tiled (skin_assets.js pack): TILE x TILE tiles, each
+ * different one once, in an ATLAS_W wide atlas whose first rows hold the tile grid (each tile's slot). The
+ * cluster's renderer keeps 16 MiB for every app's pixels together, an asset counted twice; 0.8.4-0.11.1's
+ * whole textures were 14.6 MiB of it (M Style), so G's Music, G's TV, the Waze map or the logo next to
+ * them had it refused: "the service's pixel memory is full". Tiled they are under 6.5 MiB, the same texels.
+ */
+const TILE = 16, ATLAS_W = 512;
+/** an atlas for a w x h picture with n distinct tiles: { nx, ny, hdr (the first tile row), w, h } */
+function atlasLayout(w, h, n) {
+    const nx = Math.ceil(w / TILE), ny = Math.ceil(h / TILE), hdr = Math.ceil(ny / TILE) * TILE;
+    if (nx > ATLAS_W) throw new Error('atlas: ' + w + ' px wide is too wide to tile');
+    if (n === undefined) n = nx * ny;
+    return { nx, ny, hdr, w: ATLAS_W, h: hdr + Math.ceil(n / (ATLAS_W / TILE)) * TILE };
+}
+/** the shader's atlas constants for each tiled texture, at most (no tile shared): for compile checks only;
+ * the skin passes the atlases it made (skin_assets.js packLook / packField -> dims) */
+function nominalDims() {
+    const d = (w, h) => { const a = atlasLayout(w, h); return [a.w, a.h, a.hdr]; };
+    return { art: d(REGION_W, REGION_H), band: d(BAND_W, BAND_ROWS), field: d(Math.ceil(REGION_W / FIELD_K), Math.ceil(REGION_H / FIELD_K)) };
+}
+module.exports = { FIELD_K, TILE, ATLAS_W, atlasLayout, nominalDims, GEOM, PANEL_W, PANEL_H, REGION_W, REGION_H, SIDES, BAND_W, BAND_ROWS, MAIN_ROWS, SMALL_ROW, SMALL_ROWS, ALT_ROW,
     SMALL_CODE, S_SCALE, CUTS, CUT_PAD, RANGE, ACC_AREA, CENTRE, SMALL_BOX, MAIN_ZONE, SPEED_COVER, GEAR_COVER, SPEED_MAX, LEN, MAJ, at, sOf, dirAt, local, cutsOf, uniforms, fragment, clamp, isNum, RESERVED, reservedUses };

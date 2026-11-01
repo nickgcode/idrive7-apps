@@ -41,6 +41,8 @@ const SK = require('./skin_core');
 const ASSETS = require('./skin_assets');
 const META = require('./skin_looks');
 const CL = require('./cluster_logo');
+const MEM = require('./cluster_memory');
+const MEM_FULL = MEM.MEM_FULL, memoryUsers = MEM.memoryUsers, memoryNote = MEM.memoryNote;
 
 const TARGET = 'panel', KLASS = 'content', SKIN_Z = 90;
 const SPEED_IFACE = 'de.bmw.infotainment.vehicle.Vehicle2';
@@ -120,6 +122,7 @@ class ClusterSkin {
         this.st = null; this.stAt = -1e15; this.want = false; this.why = 'closed';
         this.err = null; this.errAt = -1e15;
         this.cache = { id: '', tex: null };
+        this.fieldTex = null;                          // 0.11.2: the field's atlases (decoded once)
         this.stats = { connects: 0, layers: 0, assets: 0, bytes: 0, uniforms: 0, rearms: 0, drops: 0, refreshes: 0, samples: 0, pushes: 0, staleHides: 0 };
         this.staleAt = -1e15; this.lastPush = -1e15;
         this._reset();
@@ -132,6 +135,7 @@ class ClusterSkin {
         this.others = []; this.busyAt = -1e15; this.layerErr = ''; this.lastErr = ''; this.errCount = 0; this.refused = ''; this.noEffect = false;
         this.asked = 0; this.answered = 0;            // 0.8.5: status asks and answers, this connection
         this.healed = false;                          // 0.8.5: a lost layer made again once already
+        this.statusText = ''; this.memRetried = false; this.memUsers = [];   // 0.11.2: the last status; memory full
         this.poll = null; this.pump = null; this.downAt = this.now();
     }
 
@@ -221,6 +225,7 @@ class ClusterSkin {
         cr.on('status', (text) => {
             if (this.cr !== cr) return;
             const now = this.now();
+            this.statusText = String(text || '');
             const others = panelLayers(text, this.app).filter((l) => !l.own && (l.state === 'shown' || l.state === 'waiting' || l.state === 'suspended'));
             if (others.length) this.busyAt = now;
             const was = this.others.map((l) => l.app).join(','), is = others.map((l) => l.app).join(',');
@@ -272,6 +277,7 @@ class ClusterSkin {
         // stock until Options > Refresh cluster
         if (this.healed && /^no such (layer|asset)$/.test(String(reason || ''))) this.errCount = ERR_RETRIES;
         this.layerErr = r; this.lastErr = r;
+        if (MEM_FULL.test(r)) this.memUsers = memoryUsers(this.statusText, this.app);
         this._hide('refused');
         this._dropLook(); this._dropField();
     }
@@ -281,12 +287,26 @@ class ClusterSkin {
     _confirm() {
         const c = this.cur, cr = this.cr;
         if (c.err) {
-            this.layerErr = c.err; this.lastErr = c.err;
             this.log.warn('cluster skin: ' + c.id + ' refused (' + c.err + ')');
             this._dropLook(); this._dropField();
+            if (MEM_FULL.test(c.err)) {
+                // 0.11.2: the renderer's memory is shared by every app: ours freed first (the drops go before
+                // anything new), then made again once at once; refused again, reported with who holds it
+                const users = memoryUsers(this.statusText, this.app);
+                this.memUsers = users;
+                this.log.warn('cluster skin: the renderer\'s pixel memory is full' + (users.length ? ' - also in use by ' + memoryNote(users) : ''));
+                if (!this.memRetried) {
+                    this.memRetried = true;
+                    this.log.info('cluster skin: our assets freed, making the skin again once');
+                    return;                                  // the status handler's _apply() makes it again
+                }
+                this.layerErr = c.err; this.lastErr = c.err + (users.length ? ' - also in use by ' + memoryNote(users) : '');
+                return;
+            }
+            this.layerErr = c.err; this.lastErr = c.err;
             return;
         }
-        c.ok = true;
+        c.ok = true; this.memRetried = false;
         ['L', 'R'].forEach((s) => {
             const L = c[s];
             if (L.bound) return;                         // a replay: the client sent the binds again
@@ -404,12 +424,14 @@ class ClusterSkin {
         }
         let tex;
         try {
-            if (this.cache.id !== id) { this.cache = { id, tex: ASSETS.slice(meta, this.o.load(meta.file)) }; }
+            // 0.11.2: tiled (skin_assets.js pack): the same texels in under half the renderer's memory
+            if (this.cache.id !== id) { this.cache = { id, tex: ASSETS.packLook(ASSETS.slice(meta, this.o.load(meta.file))) }; }
             tex = this.cache.tex;
+            if (!this.fieldTex) this.fieldTex = ASSETS.packField(ASSETS.sliceField(this.o.load(META.field.file)));
             if (!this.field) {
-                const f = ASSETS.sliceField(this.o.load(META.field.file)), refs = {};
+                const f = this.fieldTex, refs = {};
                 ['L', 'R'].forEach((s) => { refs[s] = this._asset(f[s]); });
-                if (!refs.L || !refs.R) return false;
+                if (!refs.L || !refs.R) { ['L', 'R'].forEach((s) => { if (refs[s]) { try { cr.drop(refs[s]); } catch (e) { /* gone */ } } }); return false; }
                 this.field = refs;
             }
         } catch (e) { this.log.warn('cluster skin: ' + id + ' assets: ' + e.message); return false; }
@@ -423,7 +445,7 @@ class ClusterSkin {
             [art, band, glyph].forEach((r) => { if (r) cur.assets.push(r); });
             if (!art || !band || !glyph) { this._dropAll(cur); return false; }
             const ref = cr.effect({ target: TARGET, klass: KLASS, z: SKIN_Z, exclusive: false, contend: false, visible: false,
-                x: S.x, y: S.y, w: S.w, h: S.h, fs: SK.fragment(meta, s) });
+                x: S.x, y: S.y, w: S.w, h: S.h, fs: SK.fragment(meta, s, ASSETS.dimsOf(tex, this.fieldTex, s)) });
             if (!ref) { this.log.warn('cluster skin: effect layer refused by the client'); this._dropAll(cur); return false; }
             // 0.8.5: bound (and its uniforms sent) only once the service confirms the layer and its assets:
             // 0.8.4 sent them at once, to a layer the service had refused ("no such layer")
@@ -478,7 +500,7 @@ class ClusterSkin {
         }
         this._reset();
     }
-    close() { this._off(); this.want = false; this.cache = { id: '', tex: null }; }
+    close() { this._off(); this.want = false; this.cache = { id: '', tex: null }; this.fieldTex = null; }
 
     /** The Options line: { kind: 'on' | 'wait' | 'off' | 'none' | 'error', text } */
     view() {
@@ -496,6 +518,10 @@ class ClusterSkin {
         const TXT = { moving: 'Stock while driving', 'stale values': 'Stock - signal delayed', 'in gear': 'Stock while in gear',
             'no speed signal': 'Stock - no speed signal', 'demo data': 'Stock - demo data', 'panel in use': 'Waiting - panel in use',
             'renderer error': 'Renderer refused the skin', assets: 'Skin failed to load', 'no update': 'Stock', making: 'Making the skin' };
+        if (why === 'renderer error' && !this.noEffect && this.lastErr && MEM_FULL.test(this.lastErr)) {
+            const names = (this.memUsers || []).map((u) => u.name);
+            return { kind: 'error', text: 'Cluster memory full' + (names.length ? ' - ' + names.join(', ') : '') };
+        }
         if (why === 'renderer error' && !this.noEffect && this.lastErr) return { kind: 'error', text: 'Refused: ' + shortReason(this.lastErr) };
         return { kind: why === 'renderer error' || why === 'assets' ? 'error' : 'wait', text: TXT[why] || 'Stock' };
     }
