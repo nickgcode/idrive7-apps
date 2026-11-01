@@ -27,7 +27,8 @@
  *   - a home-screen widget (app.json startWidget): the G logo, large and centred (widget_logo.js).
  *   - Options > Cluster logo: the G's Dash logo in the cluster's map area while G's Dash is open and no
  *     route guidance runs (cluster_logo.js, setting "clusterLogo"; the guidance from the car's
- *     navigation status and CarPlay's / Android Auto's, 0.7.4), and below it CarPlay's map on the
+ *     navigation status and CarPlay's / Android Auto's, 0.7.4; 0.7.5: over Waze's map unless route
+ *     guidance runs, shown too when no guidance signal answers; each signal's state on the page), and below it CarPlay's map on the
  *     instrument cluster (cluster.js), on / off, through the separately installed "Waze on cluster"
  *     tool's patch service: off unless the tool is installed and the user turns it on (with a
  *     confirmation); G's Dash stores nothing for it.
@@ -61,7 +62,7 @@ const lookOf = (id) => LOOKS.find((l) => l.id === id) || LOOKS[0];
 const MPH = 1.609344;
 const TRAIL_MS = 3000;
 const OIL_READY_F = 194, COOLANT_READY_F = 176, HYST_F = 4;
-const VERSION = '0.7.4';
+const VERSION = '0.7.5';
 // Warm-up: the rev limit is COLD_RPM at or below COLD_F oil, rising (250 rpm steps) to WARM_REDLINE at
 // the "oil temp for full revs" setting. Auto-jump: AUTO_MS after READY it opens Drive.
 const COLD_RPM = 4000, COLD_F = 104, WARM_REDLINE = 6000, OIL_FULL_F = 180, AUTO_MS = 5000;
@@ -177,22 +178,30 @@ mgu.run({
         if (ui.onVisible) ui.onVisible((st, on) => { if (st === 'MAIN') logoUpdate(on); });
         settings.onChange((k) => { if (k === 'clusterLogo' || k === 'look') logoUpdate(ui.isVisible ? ui.isVisible('MAIN') : true); });
         process.once('exit', () => clogo.close());
-        // route guidance (0.7.4): the logo steps aside while it runs. The stock navigation's guidingState
+        // route guidance (0.7.4, 0.7.5): the logo steps aside while it runs, and only then (or for G's TV). The stock navigation's guidingState
         // (INACTIVE / CALCULATING_ROUTE / ACTIVE) and the phone's projectedGuidanceActive (CarPlay: Waze
         // or Maps with a route; Android Auto), all app.json "_optional"; read again every GUIDE_POLL_MS
-        // in case a change notification is missed. No answer from the navigation: the 0.7.3 behaviour.
+        // in case a change notification is missed. No answer from any: the logo still shows (the page
+        // says "route detection unavailable"); each watch's state goes to clogo.guideLink() for the
+        // page's "Route: nav .. CarPlay .. AA .." line (n/a: no config or refused; no answer: subscribed,
+        // the provider not there), kept up every GUIDE_LINK_MS.
         const GUIDE = [
             ['de.bmw.infotainment.navigation.navigationstatus.NavigationStatus', '1', 'guidingState', 'nav'],
             ['de.bmw.infotainment.a4a.carplay.CarPlayManager', 'CarPlayManagerInst1', 'projectedGuidanceActive', 'carplay'],
             ['de.bmw.infotainment.sdi.aap.androidautoprojectedmanager.AndroidAutoProjectedManager', 'AndroidAutoProjectedManagerInst1', 'projectedGuidanceActive', 'aa'],
         ];
-        const GUIDE_POLL_MS = 10000;
+        const GUIDE_POLL_MS = 10000, GUIDE_LINK_MS = 2000;
         if (ctx.signals && ctx.signals.watch) GUIDE.forEach((g) => {
             const h = {};
             h[g[2]] = (v) => clogo.guidance(g[3], v);
             ctx.signals.watch(g[0], g[1], h, log, { pollMs: GUIDE_POLL_MS })
-                .then((r) => log.info('guidance ' + g[3] + ': ' + (r.error ? 'unavailable (' + r.error + ')' : r.available ? 'available' : 'subscribed')))
-                .catch((e) => log.warn('guidance ' + g[3] + ': ' + e));
+                .then((r) => {
+                    log.info('guidance ' + g[3] + ': ' + (r.error ? 'unavailable (' + r.error + ')' : r.available ? 'available' : 'subscribed'));
+                    const link = () => clogo.guideLink(g[3], r.error ? 'error' : r.available ? 'up' : 'down', r.error ? String(r.error) : '');
+                    link();
+                    if (!r.error) { const iv = setInterval(link, GUIDE_LINK_MS); if (iv.unref) iv.unref(); }
+                })
+                .catch((e) => { log.warn('guidance ' + g[3] + ': ' + e); clogo.guideLink(g[3], 'error', String(e && e.message || e)); });
         });
         // settings 0.4.0 had and 0.5.0 dropped (demo, layout, renderer, speedUnit, spotifyPoll, showBadge),
         // and 0.6.0's (lights: the Race colours, LIGHT_STYLE; theme: Simple in M Tricolour, look_simple.js)
@@ -732,9 +741,11 @@ mgu.run({
             const lh = ROW_H + 12;
             lbl('Logo', x0, S.y + 20, 18, t.dim);
             logoRow(cv, S, lk, x0, S.y + 34, lw, lh);
+            // which guidance signal answers (0.7.5): n/a, no answer, no value, or its last value
+            cv.text(fitText(cv, clogo.routeLine(), 18, lw - 8), x0 + 4, S.y + 34 + lh + 26, 18, t.dim, { literal: true });
             // CarPlay's map (Waze on cluster), below: the switch, two halves, the state's one lit; a tap
             // on the other asks first
-            const my = S.y + 34 + lh + 24, top = my + 34;
+            const my = S.y + 34 + lh + 40, top = my + 34;
             lbl('CarPlay map in the cluster (Waze on cluster)', x0, my + 20, 18, t.dim);
             const bw = (lw - 16) / 2, bh = 66;
             [[false, 'Off', 'revert'], [true, 'On', 'apply']].forEach((b, i) => {
@@ -763,9 +774,10 @@ mgu.run({
             const ix = x0 + lw + 40, iw = S.x + S.w - ix;
             lbl('About', ix, S.y + 20, 18, t.dim);
             const INFO = [
-                ['The logo: in the map area while G\'s Dash is open, over a', t.text],
-                ['map with no route; it steps aside for route guidance (the', t.text],
+                ['The logo: in the map area while G\'s Dash is open, over', t.text],
+                ['Waze\'s map too; it steps aside only for route guidance (the', t.text],
                 ['car\'s navigation, CarPlay or Android Auto) and G\'s TV.', t.text],
+                ['No route signal: it stays (turn it off for a route).', t.dim],
                 ['Needs the Cluster renderer tool from the Store.', t.dim],
                 ['', null],
                 ["CarPlay's map on the instrument cluster, drawn by the", t.text],
