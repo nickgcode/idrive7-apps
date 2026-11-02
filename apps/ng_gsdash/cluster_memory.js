@@ -57,4 +57,51 @@ function memoryNote(users) {
     return (users || []).map((u) => u.name + (u.what.length ? ' (' + u.what.join(', ') + ')' : '')).join(', ');
 }
 
-module.exports = { LIMIT, asset, image, video, MEM_FULL, APP_NAMES, memoryUsers, memoryNote };
+/**
+ * 0.12.1: the renderer's accounting frees a dropped asset at once, but its GPU texture goes only when the
+ * renderer next draws (the scene's destroy, then its flush): a drop and an upload in the same batch can
+ * hold the old and the new pixels together on the GPU. So the old ones are dropped first, and the new
+ * ones go up only once the service has answered a status asked after the drops (it handled them) and
+ * FREE_MS (several of its frames) have passed. A look switch waits SETTLE_MS for the choice to settle
+ * (the old look stays shown meanwhile), so a quick run of switches makes the last look only.
+ */
+const FREE_MS = 150, SETTLE_MS = 350;
+/** 0.12.1: what we keep free of the 16 MiB for what the status does not size (other apps' image and video layers) */
+const MARGIN = 1024 * 1024;
+/** every asset in a status text, as the renderer counts it (twice) */
+function statusBytes(text) {
+    let b = 0;
+    String(text || '').split('\n').forEach((line) => {
+        const m = /^asset \d+ (r8|rgba8) (\d+)x(\d+) of /.exec(line);
+        if (m) b += (+m[2]) * (+m[3]) * (m[1] === 'r8' ? 1 : 4) * 2;
+    });
+    return b;
+}
+/**
+ * 0.12.1: would adding bytes (as counted, twice) fit, from the last status (asked after our drops)?
+ * { ok, used, adding, free }: checked before anything is sent, so a look that would not fit is never uploaded.
+ */
+function fits(text, adding) {
+    const used = statusBytes(text);
+    return { ok: used + adding + MARGIN <= LIMIT, used, adding, free: LIMIT - used };
+}
+/**
+ * 0.12.1: drops first, uploads after - the gate between them. dropped(asked) after the drops and the
+ * status ask that follows them; open(answered) once that answer came and FREE_MS passed.
+ */
+const lastDrop = new Map();                             // a clock -> when any of G's Dash's cluster parts last dropped
+class FreeGate {
+    constructor(now) { this.now = now || Date.now; this.reset(); }
+    reset() { this.pending = false; this.until = 0; this.at = -1e15; }
+    dropped(asked) { this.pending = true; this.until = asked; this.at = this.now(); lastDrop.set(this.now, this.at); }
+    /** also FREE_MS after another part's drops (the skin, HUD and full-screen test hand the panel to each other) */
+    open(answered) {
+        const t = this.now(), other = lastDrop.has(this.now) ? lastDrop.get(this.now) : -1e15;
+        if (t - other < FREE_MS && t >= other) return false;
+        if (!this.pending) return true;
+        if (answered >= this.until && t - this.at >= FREE_MS) { this.pending = false; return true; }
+        return false;
+    }
+}
+
+module.exports = { LIMIT, asset, image, video, MEM_FULL, APP_NAMES, memoryUsers, memoryNote, FREE_MS, SETTLE_MS, MARGIN, statusBytes, fits, FreeGate };

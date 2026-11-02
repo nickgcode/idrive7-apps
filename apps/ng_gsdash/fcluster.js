@@ -83,6 +83,7 @@ class FullCluster {
         this.others = []; this.busyAt = -1e15; this.layerErr = ''; this.lastErr = ''; this.errCount = 0; this.refused = ''; this.noEffect = false;
         this.asked = 0; this.answered = 0; this.healed = false;
         this.statusText = ''; this.memRetried = false; this.memUsers = [];
+        this.gate = new MEM.FreeGate(this.now);   // 0.12.1: drops first, uploads after the renderer let them go
         this.layerState = ''; this.poll = null; this.pump = null; this.downAt = this.now();
     }
 
@@ -124,7 +125,7 @@ class FullCluster {
         this.stats.connects++;
         cr.on('ready', () => {
             if (this.cr !== cr) return;
-            this.ready = true; this.asked = 0; this.answered = 0;
+            this.ready = true; this.asked = 0; this.answered = 0; this.gate.reset();
             this.log.info('full-screen cluster: connected');
             this._ask();
             if (this.cur) this._unconfirm(this.cur);       // the client's replay, confirmed by this ask
@@ -132,7 +133,7 @@ class FullCluster {
         cr.on('disconnected', () => {
             if (this.cr !== cr) return;
             this.ready = false; this.polled = false; this.downAt = this.now();
-            this.asked = 0; this.answered = 0;
+            this.asked = 0; this.answered = 0; this.gate.reset();
             if (this.cur) { try { cr.set(this.cur.ref, { visible: false }); } catch (e) { /* gone */ } FS.setBase(cr, this.cur, 0); this.cur.ok = false; }
             if (this.visible || this.fadeAt) this.diag.hidden('disconnected', 'full-screen cluster: disconnected'); else this.log.info('full-screen cluster: disconnected');
             this.visible = false; this.fadeAt = 0;
@@ -243,6 +244,7 @@ class FullCluster {
         this.why = why;
         if (why) { this._hide(why); return; }
         if (!this.cur) {
+            if (!this.gate.open(this.answered)) { this.why = 'making'; return; }   // 0.12.1
             let ok = false;
             try { ok = this._make(); } catch (e) { this.log.warn('full-screen cluster: ' + (e.stack || e)); this.layerErr = 'make: ' + e.message; }
             if (!ok) { this._hide('assets'); return; }
@@ -314,6 +316,15 @@ class FullCluster {
             if (!this.atlas) { const img = this.o.load(FC.ATLAS.file); this.atlas = { w: img.w, h: img.h, data: FC.r8(img) }; }
         } catch (e) { this.log.warn('full-screen cluster: ' + FC.ATLAS.file + ': ' + e.message); return false; }
         const A = this.atlas;
+        // 0.12.1: checked against the renderer's memory (its last status) before sending
+        const need = MEM.asset(A.w, A.h, true), fit = MEM.fits(this.statusText, need);
+        if (this.statusText && !fit.ok) {
+            const r = 'asset: the service\'s pixel memory is full (checked before sending: ' + (fit.used / 1048576).toFixed(1) + ' MiB in use, ' + (need / 1048576).toFixed(1) + ' MiB needed)';
+            this.memUsers = MEM.memoryUsers(this.statusText, this.app);
+            this.log.warn('full-screen cluster: not sent - ' + r.slice(7));
+            this.layerErr = r; this.lastErr = r;
+            return false;
+        }
         const asset = cr.asset({ target: TARGET, format: 'r8', w: A.w, h: A.h, sampling: 'bilinear' });
         if (!asset) { this.log.warn('full-screen cluster: asset refused by the client'); return false; }
         cr.pixels(asset, null, toBuf(A.data));
@@ -336,6 +347,7 @@ class FullCluster {
         if (!cr || !c) return;
         if (c.ref) { try { cr.drop(c.ref); this.stats.drops++; } catch (e) { /* gone */ } }
         if (c.asset) { try { cr.drop(c.asset); this.stats.drops++; } catch (e) { /* gone */ } }
+        this._ask(); this.gate.dropped(this.asked);         // 0.12.1
     }
 
     _restart(why) {

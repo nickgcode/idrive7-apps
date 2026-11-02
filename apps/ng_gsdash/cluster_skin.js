@@ -46,6 +46,7 @@ const CL = require('./cluster_logo');
 const MEM = require('./cluster_memory');
 const FS = require('./failsafe');
 const MEM_FULL = MEM.MEM_FULL, memoryUsers = MEM.memoryUsers, memoryNote = MEM.memoryNote;
+const mib = (b) => (b / 1048576).toFixed(1) + ' MiB';
 
 const TARGET = 'panel', KLASS = 'content', SKIN_Z = 90;
 const SPEED_IFACE = 'de.bmw.infotainment.vehicle.Vehicle2';
@@ -140,6 +141,8 @@ class ClusterSkin {
         this.asked = 0; this.answered = 0;            // 0.8.5: status asks and answers, this connection
         this.healed = false;                          // 0.8.5: a lost layer made again once already
         this.statusText = ''; this.memRetried = false; this.memUsers = [];   // 0.11.2: the last status; memory full
+        // 0.12.1: drops first, the new look's upload only after the renderer let them go (cluster_memory.js)
+        this.gate = new MEM.FreeGate(this.now); this.seen = { id: '', at: -1e15 };
         this.poll = null; this.pump = null; this.downAt = this.now();
     }
 
@@ -198,7 +201,7 @@ class ClusterSkin {
         this.stats.connects++;
         cr.on('ready', () => {
             if (this.cr !== cr) return;
-            this.ready = true; this.asked = 0; this.answered = 0;
+            this.ready = true; this.asked = 0; this.answered = 0; this.gate.reset();
             this.log.info('cluster skin: connected');
             this._ask();
             // 0.8.5: the client replayed our layers on connecting (before this): in use again only once the
@@ -210,7 +213,7 @@ class ClusterSkin {
             // the service removes a closed client's layers; the dead-man fades ours meanwhile. Made again
             // whole on the next connection (the client's own reconnect, or ours after RECONNECT_MS).
             this.ready = false; this.polled = false; this.downAt = this.now();
-            this.asked = 0; this.answered = 0;
+            this.asked = 0; this.answered = 0; this.gate.reset();
             // 0.8.5: hidden in the client's copy (the replay makes them hidden); nothing in use until confirmed
             if (this.cur) {
                 ['L', 'R'].forEach((s) => { if (this.cur[s]) { try { cr.set(this.cur[s].ref, { visible: false }); } catch (e) { /* gone */ } FS.setBase(cr, this.cur[s], 0); } });
@@ -321,7 +324,10 @@ class ClusterSkin {
         this.log.info('cluster skin: ' + c.id + ' confirmed by the renderer');
     }
     _dropField() {
-        if (this.field && this.cr) { ['L', 'R'].forEach((s) => { try { this.cr.drop(this.field[s]); this.stats.drops++; } catch (e) { /* gone */ } }); }
+        if (this.field && this.cr) {
+            ['L', 'R'].forEach((s) => { try { this.cr.drop(this.field[s]); this.stats.drops++; } catch (e) { /* gone */ } });
+            this._ask(); this.gate.dropped(this.asked);
+        }
         this.field = null;
     }
     _tick() {
@@ -362,8 +368,14 @@ class ClusterSkin {
         const why = this._why();
         this.why = why;
         if (why) { this._hide(why); return; }
-        const id = this.lookId();
-        if (!this.cur || this.cur.id !== id) {
+        const id = this.lookId(), now = this.now();
+        if (id !== this.seen.id) this.seen = { id, at: now };
+        // 0.12.1: a look shown stays until the choice settles (a quick run of switches makes the last only)
+        const settling = !!(this.cur && this.cur.ok && this.cur.id !== id && now - this.seen.at < MEM.SETTLE_MS);
+        if (!settling && (!this.cur || this.cur.id !== id)) {
+            // 0.12.1: the old look's layers and assets dropped, the new ones sent only once the renderer let them go
+            if (this.cur) this._dropLook();
+            if (!this.gate.open(this.answered)) { this.why = 'making'; return; }
             let ok = false;
             try { ok = this._make(id); } catch (e) { this.log.warn('cluster skin: ' + (e.stack || e)); this.layerErr = 'make: ' + e.message; }
             if (!ok) { this._hide('assets'); return; }
@@ -390,7 +402,9 @@ class ClusterSkin {
     _pump() {
         if (!this.want || !this.cr || !this.ready) return;
         if (this._why()) { if (this.visible) this._apply(); return; }
-        if (!this.visible) { if (this.cur) this._apply(); if (!this.visible) return; }
+        // 0.12.1: a look switch (once settled) and a gated upload are taken up here
+        if (this.cur && this.cur.id !== this.lookId()) this._apply();
+        if (!this.visible) { if (this.cur || this.gate.pending) this._apply(); if (!this.visible) return; }
         if (!this.cur || !this.cur.ok) return;
         if (this.now() - this.lastPush >= PUSH_MS - 2) this._uniforms(false);
         if (this.now() - this.lastRearm >= REARM_MS) this._rearm();
@@ -432,6 +446,30 @@ class ClusterSkin {
             if (this.cache.id !== id) { this.cache = { id, tex: ASSETS.packLook(ASSETS.slice(meta, this.o.load(meta.file))) }; }
             tex = this.cache.tex;
             if (!this.fieldTex) this.fieldTex = ASSETS.packField(ASSETS.sliceField(this.o.load(META.field.file)));
+            // the old look's go first (0.12.1: _apply drops them and waits for the renderer to let them go)
+            if (this.cur) { this._dropLook(); return false; }
+            // 0.12.1: checked against the renderer's memory (its last status, asked after our drops) before sending
+            let need = 0;
+            ['L', 'R'].forEach((s) => {
+                [tex.art[s], tex.band[s], tex.glyph[s]].forEach((t) => { need += MEM.asset(t.w, t.h, false); });
+                if (!this.field) need += MEM.asset(this.fieldTex[s].w, this.fieldTex[s].h, false);
+            });
+            const fit = MEM.fits(this.statusText, need);
+            if (this.statusText && !fit.ok) {
+                // as a refusal (0.11.2), but nothing sent: tried again once on the next answer, then reported
+                const r = 'asset: the service\'s pixel memory is full (checked before sending: ' + mib(fit.used) + ' in use, ' + mib(need) + ' needed)';
+                const users = memoryUsers(this.statusText, this.app), also = users.length ? ' - also in use by ' + memoryNote(users) : '';
+                this.memUsers = users;
+                this.log.warn('cluster skin: the renderer\'s pixel memory is full (checked before sending ' + id + ': ' + mib(fit.used) + ' in use, ' + mib(need) + ' needed)' + also);
+                if (!this.memRetried) {
+                    this.memRetried = true;
+                    this.log.info('cluster skin: nothing sent, making the skin again once');
+                    this._ask();
+                    return false;
+                }
+                this.layerErr = r; this.lastErr = r + also;
+                return false;
+            }
             if (!this.field) {
                 const f = this.fieldTex, refs = {};
                 ['L', 'R'].forEach((s) => { refs[s] = this._asset(f[s]); });
@@ -439,9 +477,6 @@ class ClusterSkin {
                 this.field = refs;
             }
         } catch (e) { this.log.warn('cluster skin: ' + id + ' assets: ' + e.message); return false; }
-        // 0.8.4: the old look's assets go first - both looks at once do not fit the renderer's pixel memory
-        const old = this.cur;
-        if (old) { this._dropAll(old); this.cur = null; this.visible = false; }
         const cur = { id, meta, assets: [] };
         for (let i = 0; i < 2; i++) {
             const s = i ? 'R' : 'L', S = SK.SIDES[s];
@@ -475,7 +510,12 @@ class ClusterSkin {
         ['L', 'R'].forEach((s) => { if (cur[s] && cur[s].ref) { try { cr.drop(cur[s].ref); this.stats.drops++; } catch (e) { /* gone */ } } });
         cur.assets.forEach((r) => { try { cr.drop(r); this.stats.drops++; } catch (e) { /* gone */ } });
     }
-    _dropLook() { if (this.cur) { this._dropAll(this.cur); this.cur = null; this.visible = false; } }
+    /** 0.12.1: then a status asked, and the gate shut until the renderer answered it and FREE_MS passed */
+    _dropLook() {
+        if (!this.cur) return;
+        this._dropAll(this.cur); this.cur = null; this.visible = false;
+        this._ask(); this.gate.dropped(this.asked);
+    }
 
     _restart(why) {
         this.log.info('cluster skin: reconnecting (' + why + ')');

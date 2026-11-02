@@ -31,6 +31,7 @@ const CL = require('./cluster_logo');
 const ASSETS = require('./skin_assets');
 const CS = require('./cluster_skin');
 const FS = require('./failsafe');
+const MEM = require('./cluster_memory');
 
 const TARGET = 'hud', KLASS = 'content', HUD_Z = 80;
 const PARKED_KMH = 1;
@@ -67,6 +68,7 @@ function values(s, now) {
     return HC.frame({ rpm: d.rpm, shift: s && s.shift, gear: s && s.gear, guessed: !!d.gearGuessed, kmh: d.speed }, now);
 }
 const toBuf = (u8) => Buffer.from(u8.buffer, u8.byteOffset, u8.length);
+const mib = (b) => (b / 1048576).toFixed(1) + ' MiB';
 
 class HudShift {
     /** opts: log, app, load(file) -> { w, h, data }, client / sock / testing (tests), now(), timers */
@@ -92,6 +94,8 @@ class HudShift {
         this.visible = false; this.lastRearm = -1e15;
         this.others = []; this.busyAt = -1e15; this.layerErr = ''; this.lastErr = ''; this.errCount = 0; this.refused = ''; this.noEffect = false;
         this.asked = 0; this.answered = 0; this.healed = false;   // 0.8.5: as the skins (cluster_skin.js)
+        // 0.12.1: drops first, the new look's upload only after the renderer let them go (cluster_memory.js)
+        this.gate = new MEM.FreeGate(this.now); this.statusText = ''; this.seen = { id: '', at: -1e15 };
         this.hudState = ''; this.hudHolder = ''; this.hudReason = ''; this.layerState = ''; this.poll = null; this.pump = null; this.downAt = this.now();
     }
 
@@ -135,7 +139,7 @@ class HudShift {
         this.stats.connects++;
         cr.on('ready', () => {
             if (this.cr !== cr) return;
-            this.ready = true; this.asked = 0; this.answered = 0;
+            this.ready = true; this.asked = 0; this.answered = 0; this.gate.reset();
             this.log.info('hud shift: connected');
             this._ask();
             if (this.cur) this._unconfirm(this.cur);       // 0.8.5: the client's replay, confirmed by this ask
@@ -143,7 +147,7 @@ class HudShift {
         cr.on('disconnected', () => {
             if (this.cr !== cr) return;
             this.ready = false; this.polled = false; this.downAt = this.now();
-            this.asked = 0; this.answered = 0;
+            this.asked = 0; this.answered = 0; this.gate.reset();
             if (this.cur) { try { cr.set(this.cur.ref, { visible: false }); } catch (e) { /* gone */ } FS.setBase(cr, this.cur, 0); this.cur.ok = false; }
             if (this.visible) this.diag.hidden('disconnected', 'hud shift: disconnected'); else this.log.info('hud shift: disconnected');
             this.visible = false;
@@ -162,6 +166,7 @@ class HudShift {
         cr.on('status', (text) => {
             if (this.cr !== cr) return;
             const now = this.now();
+            this.statusText = String(text || '');
             const others = CS.panelLayers(text, this.app).filter((l) => !l.own && (l.state === 'shown' || l.state === 'waiting' || l.state === 'suspended'));
             if (others.length) this.busyAt = now;
             const was = this.others.map((l) => l.app).join(','), is = others.map((l) => l.app).join(',');
@@ -252,8 +257,14 @@ class HudShift {
         const why = this._why();
         this.why = why;
         if (why) { this._hide(why); return; }
-        const id = this.lookId();
-        if (!this.cur || this.cur.id !== id) {
+        const id = this.lookId(), now = this.now();
+        if (id !== this.seen.id) this.seen = { id, at: now };
+        // 0.12.1: a look shown stays until the choice settles (a quick run of switches makes the last only)
+        const settling = !!(this.cur && this.cur.ok && this.cur.id !== id && now - this.seen.at < MEM.SETTLE_MS);
+        if (!settling && (!this.cur || this.cur.id !== id)) {
+            // 0.12.1: the old look's layer and assets dropped, and the new ones sent only once the renderer let them go
+            if (this.cur) this._dropLook();
+            if (!this.gate.open(this.answered)) { this.why = 'making'; return; }
             let ok = false;
             try { ok = this._make(id); } catch (e) { this.log.warn('hud shift: ' + (e.stack || e)); this.layerErr = 'make: ' + e.message; }
             if (!ok) { this._hide('assets'); return; }
@@ -279,7 +290,9 @@ class HudShift {
     _pump() {
         if (!this.want || !this.cr || !this.ready) return;
         if (this._why()) { if (this.visible) this._apply(); return; }
-        if (!this.visible) { if (this.cur) this._apply(); if (!this.visible) return; }
+        // 0.12.1: a look switch (once settled) and a gated upload are taken up here
+        if (this.cur && this.cur.id !== this.lookId()) this._apply();
+        if (!this.visible) { if (this.cur || this.gate.pending) this._apply(); if (!this.visible) return; }
         if (!this.cur || !this.cur.ok) return;
         if (this.now() - this.lastPush >= PUSH_MS - 2) this._uniforms(false);
         if (this.now() - this.lastRearm >= REARM_MS) this._rearm();
@@ -316,9 +329,16 @@ class HudShift {
             if (!this.big || this.big.id !== id) this.big = { id, img: ASSETS.crop(this.o.load(big.file), big.x, big.y, big.w, big.h) };
             cells = this.big.img;
         } catch (e) { this.log.warn('hud shift: ' + id + ' assets: ' + e.message); return false; }
-        // the old look's assets go first: two looks' would not fit the renderer's pixel memory with the logo
-        const old = this.cur;
-        if (old) { this._dropAll(old); this.cur = null; this.visible = false; }
+        // the old look's assets go first (0.12.1: _apply drops them and waits for the renderer to let them go)
+        if (this.cur) { this._dropLook(); return false; }
+        // 0.12.1: checked against the renderer's memory (its last status, asked after our drops) before sending
+        const need = MEM.asset(pane.w, pane.h, false) + MEM.asset(cells.w, cells.h, false), fit = MEM.fits(this.statusText, need);
+        if (this.statusText && !fit.ok) {
+            const r = 'asset: the service\'s pixel memory is full (checked before sending: ' + mib(fit.used) + ' in use, ' + mib(need) + ' needed)';
+            this.log.warn('hud shift: ' + id + ' not sent - ' + r.slice(7));
+            this.layerErr = r; this.lastErr = r;
+            return false;
+        }
         const cur = { id, style, assets: [], ref: 0, anim: 0, sent: '', base: -1 };
         const a = this._asset(pane, 'nearest'), g = this._asset(cells, big.sampling);
         [a, g].forEach((r) => { if (r) cur.assets.push(r); });
@@ -352,7 +372,12 @@ class HudShift {
         if (cur.ref) { try { cr.drop(cur.ref); this.stats.drops++; } catch (e) { /* gone */ } }
         cur.assets.forEach((r) => { try { cr.drop(r); this.stats.drops++; } catch (e) { /* gone */ } });
     }
-    _dropLook() { if (this.cur) { this._dropAll(this.cur); this.cur = null; this.visible = false; } }
+    /** 0.12.1: then a status asked, and the gate shut until the renderer answered it and FREE_MS passed */
+    _dropLook() {
+        if (!this.cur) return;
+        this._dropAll(this.cur); this.cur = null; this.visible = false;
+        this._ask(); this.gate.dropped(this.asked);
+    }
 
     _restart(why) {
         this.log.info('hud shift: reconnecting (' + why + ')');
