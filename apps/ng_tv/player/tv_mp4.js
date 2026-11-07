@@ -2,11 +2,14 @@
 /**
  * tv_mp4.js - reads the video track of a progressive MP4 (ISO BMFF) over byte ranges: where moov is,
  * then its sample table (stsz, stco/co64, stsc, stts, ctts, stss) and the H.264 set-up (avcC).
- * Nothing is decoded here; the audio track is skipped (G's TV plays no sound yet).
+ * Nothing is decoded here. 0.7.0: the first audio track is read too (v.audio), for the sound
+ * (output/tv_sound.js): its sample table and its stsd box as it is, to be written into a plain .m4a.
  *
  *   const v = await mp4.open(net, href, moovHint)
  *   v -> { w, h, timescale, avcC (Buffer), profile, n, off, size, dts, cts, key (typed arrays), keys [index],
- *          duration (s), total (file bytes), codec }
+ *          duration (s), total (file bytes), codec,
+ *          audio: null | { codec ('mp4a'), timescale, rate, channels, stsd (Buffer), n, off, size, dts, dur,
+ *                          duration (s) } }
  */
 
 const HEAD = 65536;
@@ -60,9 +63,65 @@ async function locateMoov(net, href, moovHint) {
     throw new Error('no moov box found');
 }
 
+const handler = (b, trak) => { const h = path(b, trak, ['mdia', 'hdlr']); return h ? b.toString('latin1', h.body + 8, h.body + 12) : ''; };
+
+/** An audio track: { codec, timescale, rate, channels, stsd, n, off, size, dts, dur (ticks each), duration }, or null. */
+function parseAudio(b, trak) {
+    if (handler(b, trak) !== 'soun') return null;
+    const mdhd = path(b, trak, ['mdia', 'mdhd']);
+    const timescale = b[mdhd.body] === 1 ? b.readUInt32BE(mdhd.body + 20) : b.readUInt32BE(mdhd.body + 12);
+    const stbl = path(b, trak, ['mdia', 'minf', 'stbl']);
+    const tbl = {};
+    children(b, stbl.body, stbl.end).forEach((x) => { tbl[x.type] = x; });
+    if (!tbl.stsd || !tbl.stsz || !tbl.stsc || !tbl.stts || !(tbl.stco || tbl.co64)) return null;
+    const entry = box(b, tbl.stsd.body + 8);
+    const t = table(b, tbl);
+    const dur = new Uint32Array(t.n);
+    for (let i = 0; i < t.n; i++) dur[i] = i + 1 < t.n ? t.dts[i + 1] - t.dts[i] : t.last;
+    return { codec: entry.type, timescale, rate: b.readUInt16BE(entry.body + 24), channels: b.readUInt16BE(entry.body + 16),
+        stsd: Buffer.from(b.slice(tbl.stsd.start, tbl.stsd.end)), n: t.n, off: t.off, size: t.size, dts: t.dts, dur,
+        duration: t.end / timescale };
+}
+
+/** A track's sample table: { n, size, off, dts, end (ticks), last (the last sample's ticks) }. */
+function table(b, tbl) {
+    const stsz = tbl.stsz;
+    const fixed = b.readUInt32BE(stsz.body + 4), n = b.readUInt32BE(stsz.body + 8);
+    const size = new Uint32Array(n);
+    for (let i = 0; i < n; i++) size[i] = fixed || b.readUInt32BE(stsz.body + 12 + i * 4);
+    let chunks;
+    if (tbl.stco) {
+        const m = b.readUInt32BE(tbl.stco.body + 4); chunks = new Float64Array(m);
+        for (let i = 0; i < m; i++) chunks[i] = b.readUInt32BE(tbl.stco.body + 8 + i * 4);
+    } else {
+        const m = b.readUInt32BE(tbl.co64.body + 4); chunks = new Float64Array(m);
+        for (let i = 0; i < m; i++) chunks[i] = b.readUInt32BE(tbl.co64.body + 8 + i * 8) * 4294967296 + b.readUInt32BE(tbl.co64.body + 12 + i * 8);
+    }
+    const off = new Float64Array(n);
+    const sc = tbl.stsc, ne = b.readUInt32BE(sc.body + 4);
+    let s = 0;
+    for (let e = 0; e < ne; e++) {
+        const first = b.readUInt32BE(sc.body + 8 + e * 12) - 1, per = b.readUInt32BE(sc.body + 12 + e * 12);
+        const last = e + 1 < ne ? b.readUInt32BE(sc.body + 8 + (e + 1) * 12) - 1 : chunks.length;
+        for (let c = first; c < last && s < n; c++) {
+            let o = chunks[c];
+            for (let k = 0; k < per && s < n; k++) { off[s] = o; o += size[s]; s++; }
+        }
+    }
+    const dts = new Float64Array(n);
+    const st = tbl.stts, nt = b.readUInt32BE(st.body + 4);
+    let t = 0, d = 0;
+    s = 0;
+    for (let e = 0; e < nt; e++) {
+        const cnt = b.readUInt32BE(st.body + 8 + e * 8);
+        d = b.readUInt32BE(st.body + 12 + e * 8);
+        for (let k = 0; k < cnt && s < n; k++) { dts[s++] = t; t += d; }
+    }
+    return { n, size, off, dts, end: t, last: d };
+}
+
 function parseTrak(b, trak) {
-    const hdlr = path(b, trak, ['mdia', 'hdlr']);
-    if (!hdlr || b.toString('latin1', hdlr.body + 8, hdlr.body + 12) !== 'vide') return null;
+    if (handler(b, trak) !== 'vide') return null;
     const mdhd = path(b, trak, ['mdia', 'mdhd']);
     const v = b[mdhd.body];
     const timescale = v === 1 ? b.readUInt32BE(mdhd.body + 20) : b.readUInt32BE(mdhd.body + 12);
@@ -143,9 +202,11 @@ async function open(net, href, moovHint) {
     const moov = box(b, 0);
     if (!moov || moov.type !== 'moov') throw new Error('moov not where expected');
     const traks = children(b, moov.body, moov.end).filter((x) => x.type === 'trak');
+    let audio = null;
+    for (let i = 0; i < traks.length && !audio; i++) { try { audio = parseAudio(b, traks[i]); } catch (e) { audio = null; } }
     for (let i = 0; i < traks.length; i++) {
         const v = parseTrak(b, traks[i]);
-        if (v) { v.total = loc.total; v.moovBytes = loc.size; return v; }
+        if (v) { v.total = loc.total; v.moovBytes = loc.size; v.audio = audio; return v; }
     }
     throw new Error('no video track');
 }

@@ -17,8 +17,9 @@
  *   - anywhere else: as a half-size pixel image at a few frames a second (the emulator, the PC preview,
  *     the Software renderer).
  *
- * VIDEO ONLY: the audio track is not played. There is no verified way yet for an app without root to
- * play sound on this head unit, so the screen says so instead of pretending.
+ * SOUND (0.7.0, experimental, Settings > Sound, on by default): output/tv_sound.js plays the programme's
+ * own AAC through the car's media player, as RideTube does (the speakers joined by the car's audio manager);
+ * unverified on the car when written. Where the car refuses it, the screen says why and the picture plays on.
  *
  * PARKED ONLY, no override: the picture shows only while the speed (Vehicle2.statusCarSpeed2) is known
  * and at most 3 km/h AND the selector (VehicleInformation, kit car.js) reads P, for 2 s. Anything else -
@@ -91,6 +92,7 @@ const qrcodegen = require('./qrcodegen');
 const AP = require('./kit/audio_probe');
 const SP = require('./tv_sound_probe');
 const { SoundTest } = require('./tv_sound_test');
+const { Sound } = require('./tv_sound');
 
 const NAME = "G's TV";
 let VERSION = '';
@@ -106,6 +108,7 @@ const WARM_BYTES = 8 * 1024 * 1024; // fetched samples kept while paused (the ke
 const WARM_FREE_MB = 96;            // MemAvailable below this: memory is tight, the warm state goes
 const WARM_RSS_MB = 420;            // or the app itself above this
 const AFTER_NAME = { resume: 'Resume where I stopped', live: 'Jump to what\'s on now' };
+const SOUND_NAME = { on: 'On (the car\'s speakers)', off: 'Off' };
 const BANNER_MS = 4000;             // the channel banner after a change
 const CONTROLS_MS = 5000;           // the controls over the picture, after a tap
 const HOLD_MS = 650;                // a held tile: its edit sheet
@@ -264,6 +267,27 @@ mgu.run({
                 }
             },
         });
+        /*
+         * 0.7.0, the sound (output/tv_sound.js, experimental): the programme's own AAC through the car's media
+         * player, the speakers joined by the car's audio manager, as RideTube does. It follows the picture four
+         * times a second: plays while the picture plays (parked, wanted, playing), stops when it stops, starts
+         * again where the picture jumped to; the picture follows its clock.
+         */
+        const sound = new Sound({ net, dataDir: ctx.dataDir, log });
+        sound.on('clock', (t) => player.follow(t));
+        /** The sound in two words, for the chips where 'VIDEO ONLY' was. */
+        const soundChip = () => {
+            const st = sound.state;
+            return st === 'playing' ? 'SOUND ON' : /^(starting|waiting)$/.test(st) ? 'SOUND STARTING' : st === 'off' ? 'SOUND OFF' : 'NO SOUND';
+        };
+        const soundOn = () => settings.get('sound') !== 'off';
+        setInterval(() => {
+            const playing = gateOpen && want && !player.paused && player.state === 'playing' && !!player.v;
+            sound.follow({
+                on: soundOn(), playing, hard: !gateOpen || !want || player.paused || !player.v || player.state === 'idle',
+                href: player.src && player.src.href, audio: player.v && player.v.audio, pos: () => player.now(),
+            });
+        }, 250);
         player.on('state', () => {
             if (player.state === 'paused') { if (!warmAt) warmAt = Date.now(); } else if (player.state !== 'buffering') warmAt = 0;
             if (/^(idle|tuning|paused|offline|error)$/.test(player.state)) {
@@ -587,6 +611,7 @@ mgu.run({
             cluster.enable(!!settings.get('cluster'));
         }
         settings.onChange((key, value) => {
+            if (key === 'sound') { log.info('sound: ' + value); if (value !== 'off') sound.reset(); return; }
             if (!OUT[key]) return;
             if (value) {
                 Object.keys(OUT).forEach((k) => {
@@ -666,6 +691,7 @@ mgu.run({
             try { cluster.close(); } catch (e) { /* gone */ }
             try { hud.close(); } catch (e) { /* gone */ }
             try { shm.remove(); } catch (e) { /* gone */ }
+            try { sound.close(); } catch (e) { /* gone */ }
         };
         process.on('exit', cleanup);
         process.once('SIGTERM', () => { cleanup(); process.exit(0); });
@@ -772,9 +798,10 @@ mgu.run({
         function labels() {
             label('BTN_PLAY', want && !player.paused ? 'Pause' : 'Play');
             const ol = outLine();
-            label('MORE_INFO', statusLine() + ' | video only, no sound yet' + (ol ? ' | ' + ol : ''));
+            label('MORE_INFO', statusLine() + ' | sound: ' + sound.status().text + (ol ? ' | ' + ol : ''));
         }
         labels();
+        sound.on('state', () => labels());
 
         /*
          * More > Audio check: what the unit offers an app for sound, so G's TV can find the car's own way to play
@@ -833,18 +860,19 @@ mgu.run({
         };
         ui.onVisible((name, on) => { if (name === 'MORE' && on) audioCheck(); });
         /*
-         * Settings > Sound > Test sound (output/tv_sound_test.js): unlike the check, this plays. Each tap asks BMW's
-         * generic app player to play the next way (a short tone as a path, a file:// URI, from /tmp, then the
-         * Spelunkr programme on now), so the viewer can say which one they heard. Parked only, as the picture.
+         * Settings > Sound > Test sound (output/tv_sound_test.js): unlike the check, this plays. Each tap joins BMW's
+         * generic app player to the speakers (the car's audio manager) and asks it to play the next way (a short
+         * tone as AAC in /tmp, AAC in the data folder, MP3, WAV), so the viewer can say which one they heard.
+         * Parked only, as the picture.
          */
         const sTest = new SoundTest(ctx.dataDir, log);
         let sTestLine = '';
         const soundTest = () => {
             if (!gateOpen) { say('Test sound works only when parked'); return; }
             if (sTest.busy) return;
-            const n = nowOn(chId), programme = luState === 'ok' && n ? n.item.href : '';
-            sTestLine = 'Asking the car\'s media player to play test ' + (sTest.n % sTest.ways(programme).length + 1) + '...';
-            sTest.next({ programme }).then((r) => { sTestLine = SoundTest.line(r); }, (e) => { sTestLine = 'Test sound failed: ' + (e && e.message || e); });
+            sound.quiet(20000);           // the test's connection is the same source: the programme's sound waits
+            sTestLine = 'Connecting the speakers and playing test ' + (sTest.n % sTest.ways().length + 1) + '...';
+            sTest.next().then((r) => { sTestLine = SoundTest.line(r); }, (e) => { sTestLine = 'Test sound failed: ' + (e && e.message || e); });
         };
 
         /* ----- the screen ----- */
@@ -1181,7 +1209,7 @@ mgu.run({
             const right = x + w - 22, W = right - X;
             const head = (c ? c.name : srcTitle()).toUpperCase();
             cv.text(fit(cv, head, 16, W - 220, { font: 'bold', spacing: 2 }), X, y + 30, 16, on, { font: 'bold', spacing: 2, literal: true });
-            cv.text('VIDEO ONLY \u00b7 NO SOUND', right, y + 30, 13, '#ffcc33', { font: 'bold', spacing: 1, align: 'right', literal: true });
+            cv.text(soundChip(), right, y + 30, 13, sound.state === 'playing' ? t.dim : '#ffcc33', { font: 'bold', spacing: 1, align: 'right', literal: true });
             let title = cur ? cur.title : '', frac = 0, left = '', next = '';
             const pm = spel ? playingSpel() : null;
             if (pm) {
@@ -1219,7 +1247,7 @@ mgu.run({
             y += 46;
             wrap(cv, cur ? cur.title : '', 34, W, 2, { font: 'bold' }).forEach((s) => { cv.text(s, X, y, 34, t.text, { font: 'bold', literal: true }); y += 40; });
             y += 10;
-            chip(cv, X, y, 'VIDEO ONLY \u00b7 NO SOUND YET', '#1a1a1a', '#ffcc33');
+            chip(cv, X, y, soundChip(), '#1a1a1a', '#ffcc33');
             y += 66;
             wrap(cv, statusLine(), 24, W, 2).forEach((s) => { cv.text(s, X, y, 24, t.text, { literal: true }); y += 32; });
             const ol = outLine();
@@ -1232,7 +1260,7 @@ mgu.run({
             const on = t.accent2 || t.accent, hy = A.y, cyH = hy + HEAD_H / 2;
             cv.text(NAME.toUpperCase(), A.x + 4, cyH + 12, 34, t.text, { font: 'bold', spacing: 2, literal: true });
             const tw = cv.textWidth(NAME.toUpperCase(), 34, { font: 'bold', spacing: 2, literal: true });
-            chip(cv, A.x + tw + 24, cyH - 15, 'VIDEO ONLY \u00b7 PARKED ONLY', '#1a1a1a', '#ffcc33');
+            chip(cv, A.x + tw + 24, cyH - 15, 'PARKED ONLY', '#1a1a1a', '#ffcc33');
             const gr = { x: A.right - GB_W, y: hy, w: GB_W, h: HEAD_H };
             cv.text(fit(cv, lastGate.ok ? 'Pick what to watch' : 'Video available when parked', 20, 420), gr.x - 24, cyH + 7, 20, lastGate.ok ? t.dim : '#ffcc33', { align: 'right', literal: true });
             gButton(cv, t, gr, false, 'g-home', () => press('g-home', () => go('settings')));
@@ -1532,6 +1560,9 @@ mgu.run({
                 ['maxFps', 'At most (GPU video)', (v) => v + ' fps'],
                 ['afterDrive', 'After driving (Spelunkr)', (v) => AFTER_NAME[v] || AFTER_NAME.resume],
             ]],
+            ['Sound', [
+                ['sound', 'Sound (experimental)', (v) => SOUND_NAME[v] || SOUND_NAME.on],
+            ]],
         ];
         function drawSettings(cv, t, A) {
             const on = t.accent2 || t.accent, hy = A.y, cyH = hy + HEAD_H / 2;
@@ -1554,7 +1585,7 @@ mgu.run({
                 ['Output', pathName()],
                 ['Cluster', settings.get('cluster') ? (guided ? 'Directions (route guidance) - back after the route' : cluster.status(gateOpen, gateOpen && player.state === 'playing').text + ' - after TV: ' + afterTv()) : 'Off (Cluster button)'],
                 ['HUD', settings.get('hud') ? hud.status(gateOpen, gateOpen && player.state === 'playing').text : 'Off (HUD button)'],
-                ['Sound', 'None yet. Tap for the sound check and test'],
+                ['Sound', (soundOn() ? sound.status().text : 'Off') + '. Tap for the sound check'],
                 ['Sources', 'Spelunkr: the Internet Archive, no DRM. Mine: ' + store.list().length + ' of ' + Src.MAX_SOURCES],
             ];
             let y = top + 60;

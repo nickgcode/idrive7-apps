@@ -115,6 +115,62 @@ class Net {
         if (r.status === 200) throw NetError('the server ignores byte ranges', 'NORANGE', 200);
         throw NetError('HTTP ' + r.status, 'HTTP', r.status);
     }
+
+    /**
+     * Several byte ranges of href in one request (0.7.0, the sound: a programme's audio is hundreds of small
+     * pieces between the video's): list = [[start, end] inclusive, ...] -> [Buffer, ...] in the same order.
+     * The server answers multipart/byteranges (archive.org does, 600 ranges in one request) or, when it joined
+     * them, one range covering them all; each asked range is cut out of whatever came. Redirects as range().
+     */
+    async ranges(href, list) {
+        if (!list.length) return [];
+        if (list.length === 1) return [(await this.range(href, list[0][0], list[0][1])).body];
+        const want = list.reduce((a, r) => a + r[1] - r[0] + 1, 0);
+        const h = { Range: 'bytes=' + list.map((r) => r[0] + '-' + r[1]).join(',') };
+        const direct = this.redirects.get(href);
+        let r;
+        try { r = await this.get(direct || href, h, want + list.length * 160 + 65536); } catch (e) {
+            if (!direct) throw e;
+            this.redirects.delete(href);
+            r = await this.get(href, h, want + list.length * 160 + 65536);
+        }
+        if (direct && r.status >= 400) { this.redirects.delete(href); return this.ranges(href, list); }
+        if (r.status === 200) throw NetError('the server ignores byte ranges', 'NORANGE', 200);
+        if (r.status !== 206) throw NetError('HTTP ' + r.status, 'HTTP', r.status);
+        if (r.url !== href) this.redirects.set(href, r.url);
+        const parts = [];
+        const ct = String(r.headers['content-type'] || ''), bm = /boundary=("?)([^";]+)\1/i.exec(ct);
+        if (/multipart\/byteranges/i.test(ct) && bm) parts.push.apply(parts, multipart(r.body));
+        else {
+            const cr = /bytes\s+(\d+)-(\d+)/.exec(r.headers['content-range'] || '');
+            if (!cr) throw NetError('no Content-Range in the answer', 'HTTP', 206);
+            parts.push({ s: Number(cr[1]), e: Number(cr[2]), body: r.body });
+        }
+        return list.map((q) => {
+            const p = parts.filter((x) => x.s <= q[0] && x.e >= q[1])[0];
+            if (!p) throw NetError('range ' + q[0] + '-' + q[1] + ' missing from the answer', 'RANGE', 206);
+            return p.body.slice(q[0] - p.s, q[1] - p.s + 1);
+        });
+    }
+}
+
+/** The parts of a multipart/byteranges body: [{ s, e, body }] (each part's length from its Content-Range). */
+function multipart(b) {
+    const out = [];
+    let p = 0;
+    for (let guard = 0; guard < 100000; guard++) {
+        const hs = b.indexOf('Content-Range:', p, 'latin1') >= 0 ? b.indexOf('Content-Range:', p, 'latin1') : b.indexOf('content-range:', p, 'latin1');
+        if (hs < 0) break;
+        const he = b.indexOf('\r\n\r\n', hs, 'latin1');
+        if (he < 0) break;
+        const m = /bytes\s+(\d+)-(\d+)/i.exec(b.toString('latin1', hs, he));
+        if (!m) break;
+        const s = Number(m[1]), e = Number(m[2]), start = he + 4;
+        if (start + (e - s + 1) > b.length) throw NetError('a byte range was cut short', 'RANGE', 206);
+        out.push({ s, e, body: b.slice(start, start + e - s + 1) });
+        p = start + (e - s + 1);
+    }
+    return out;
 }
 
 module.exports = { Net, NetError };

@@ -2,8 +2,8 @@
 /**
  * tv_player.js - plays a channel's video: byte ranges of the MP4 over HTTPS (tv_net.js), the video
  * track's samples (tv_mp4.js) decoded in WebAssembly (tv_h264.js), each picture handed to sink(frame)
- * when its time comes. Picture only: the audio track is not read (no verified way to play sound from an
- * app without root yet).
+ * when its time comes. The sound is output/tv_sound.js's (the car's own player); the picture follows its clock
+ * (follow()).
  *
  * One thread (Node 8 has no workers): decoding runs in slices of at most SLICE_MS between other work, so
  * the screen, touch and the car's signals keep their turn.
@@ -116,6 +116,18 @@ class Player extends EventEmitter {
             // the same thing up to 3 times; then a broken programme is skipped
             if (!offline && this.fails >= 3 && this.src && this.src.next) { this.fails = 0; this.tune(this.src.next()); } else again();
         }, wait * 1000);
+    }
+
+    /**
+     * 0.7.0, the sound's clock: the picture follows the car's player (tv_sound.js). Small differences only; a
+     * bigger one is the sound's to fix (it starts again where the picture is).
+     */
+    follow(t) {
+        if (!this.v || !this.clockRun || this.paused || this.state !== 'playing') return;
+        const d = t - this.now();
+        if (Math.abs(d) < 0.12 || Math.abs(d) > 3) return;
+        this.mediaAt = t; this.wallAt = Date.now();
+        this.follows = (this.follows || 0) + 1;
     }
 
     pause() { this.paused = true; this._hold(); this._stopTimer(); if (this.v) this._set('paused', ''); }

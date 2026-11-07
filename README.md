@@ -74,7 +74,8 @@ Video on the centre screen while parked.
 - Optional playback in the HUD or the cluster, also only while parked: in the cluster while G's Dash's
   pick is Auto, in the HUD while its Dials & HUD pick is the car's own.
 
-The picture shows only in P, at a standstill. Video only, no sound yet.
+The picture shows only in P, at a standstill. Sound plays through the car's own media player and speakers
+(experimental, Settings > Sound, on by default; it may not work on every car, and Test sound on that page checks).
 
 ## Requirements
 

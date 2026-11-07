@@ -1,8 +1,8 @@
 {
   "id": "ng_tv",
   "title": "G's TV",
-  "description": "EXPERIMENTAL. Video pictures on the centre screen while parked: Spelunkr channels (programmes on the Internet Archive) with a guide and channel up / down, or your own direct MP4 (H.264) links sent from your phone. Picture only in P at a standstill; video only, no sound yet. Optional playback in the cluster (G's Dash's pick on Auto) or the HUD while parked (needs the Cluster renderer tool). Needs internet through mgu-uplink.",
-  "version": "0.6.2",
+  "description": "EXPERIMENTAL. TV on the centre screen while parked: Spelunkr channels (programmes on the Internet Archive) with a guide and channel up / down, or your own direct MP4 (H.264) links sent from your phone. Picture only in P at a standstill. Sound through the car's own media player and speakers (experimental, Settings > Sound; may not work on every car, Test sound there checks). Optional playback in the cluster (G's Dash's pick on Auto) or the HUD while parked (needs the Cluster renderer tool). Needs internet through mgu-uplink.",
+  "version": "0.7.0",
   "share": ["ng_gsdash/cluster/cluster_source.js", "ng_spotify/vendor/qrcodegen.js"],
   "vendor": "ng",
   "loggingId": "OAN3",
@@ -25,6 +25,7 @@
       "projectedGuidanceActive": "rs"
     },
     "de.bmw.infotainment.entertainment.mediaplayer.MediaPlayer": "*",
+    "org.genivi.am.commandinterface.CommandControl": "*",
     "de.bmw.infotainment.sdi.aap.androidautoprojectedmanager.AndroidAutoProjectedManager": {
       "_optional": "the cluster picture's Android Auto route guidance check: projectedGuidanceActive",
       "_instances": "AndroidAutoProjectedManagerInst1",
@@ -68,7 +69,9 @@
     {"key": "maxFps", "label": "At most (GPU video)", "type": "number", "unit": "fps", "default": 30, "markDefault": true,
      "steps": [10, 15, 20, 30]},
     {"key": "afterDrive", "label": "After driving (Spelunkr)", "type": "choice", "default": "resume",
-     "options": [["resume", "Resume where I stopped"], ["live", "Jump to what's on now"]]}
+     "options": [["resume", "Resume where I stopped"], ["live", "Jump to what's on now"]]},
+    {"key": "sound", "label": "Sound (experimental)", "type": "choice", "default": "on",
+     "options": [["on", "On (the car's speakers)"], ["off", "Off"]]}
   ],
   "_retiredSettings": "settings 0.4.1 had and 0.4.2 dropped: a saved value is deleted on start (kit/runtime/mgu.js). Pictures is always Auto, Colours always M Tricolour, the Renderer always the GPU one; the HUD test and the Full cluster / Side panels tests are gone (Cluster screen plays the video there instead); Play in HUD is the HUD button on the picture (its on / off kept by the app, not a setting). 0.4.3 dropped Cluster screen: the cluster picture is the centre map area only; Play in cluster is the Cluster button (its on / off kept by the app under 'cluster', as the HUD's, so it is not retired).",
   "retiredSettings": ["mode", "theme", "renderer", "hudtest", "paneltest", "sidetest", "clusterScreen"]
